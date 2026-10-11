@@ -55,7 +55,7 @@ flock -w 60 9 || die "another weaver-bot-user is still running"
 # rename swapped in afterwards can't redirect them anywhere else.
 enter() {
   local name="$1" expected="$2"
-  [ -d "$name" ] && [ ! -L "$name" ] || die "$expected isn't a plain directory"
+  if [ ! -d "$name" ] || [ -L "$name" ]; then die "$expected isn't a plain directory"; fi
   cd -P -- "$name" || die "can't open $expected"
   [ "$(pwd -P)" = "$expected" ] || die "$expected resolves somewhere else"
 }

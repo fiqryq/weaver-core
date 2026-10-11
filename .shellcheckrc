@@ -1,0 +1,2 @@
+# Functions run from traps and retry helpers look unreachable to shellcheck.
+disable=SC2317
