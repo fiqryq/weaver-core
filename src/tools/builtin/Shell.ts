@@ -1,13 +1,17 @@
-import { Clock, Duration, Effect, Option, Schema, Stream } from "effect"
+import { Clock, Duration, Effect, Fiber, Option, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { childEnv } from "../../platform/lib/util.ts"
 import { type AgentTool, decodeParams, jsonSchemaOf, shorten, ToolFailure } from "../AgentTool.ts"
 
-export const outputLimit = 12_000
+/** Together under the runner's tool output limit, so the end of the output is never cut again. */
+export const headBytes = 4 * 1024
+export const tailBytes = 7 * 1024
 export const defaultTimeoutSeconds = 120
 export const maxTimeoutSeconds = 600
-/** How long `timeout` waits after SIGTERM before it sends SIGKILL to a command run as the bot user. */
+/** How long a command gets after SIGTERM before it's sent SIGKILL. */
 export const killGraceSeconds = 5
+/** How long to keep reading after the command exits, while background jobs still hold its output open. */
+const drainMillis = 1_000
 
 const RunCommandParams = Schema.Struct({
   command: Schema.String.annotate({ description: "The bash command to run, e.g. `ls -la` or `git status`." }),
@@ -21,12 +25,53 @@ const titleOf = (params: unknown): string => {
   return command ? `Ran \`${shorten(command)}\`` : "Ran a command"
 }
 
-/** Keeps the start and the end of long output, where errors and summaries usually are. */
-export const clip = (output: string, limit = outputLimit): string => {
-  if (output.length <= limit) return output
-  const head = output.slice(0, Math.floor(limit * 0.4))
-  const tail = output.slice(output.length - Math.floor(limit * 0.6))
-  return `${head}\n… (${output.length - limit} characters cut) …\n${tail}`
+/** Keeps the first and last bytes of a command's output, where errors and summaries usually are. */
+export class OutputBuffer {
+  private readonly head: Uint8Array
+  private headLength = 0
+  private tail: Array<Uint8Array> = []
+  private tailLength = 0
+  private total = 0
+
+  constructor(private readonly headSize = headBytes, private readonly tailSize = tailBytes) {
+    this.head = new Uint8Array(headSize)
+  }
+
+  push(chunk: Uint8Array): void {
+    this.total += chunk.length
+    const toHead = Math.min(this.headSize - this.headLength, chunk.length)
+    if (toHead > 0) {
+      this.head.set(chunk.subarray(0, toHead), this.headLength)
+      this.headLength += toHead
+    }
+    const rest = chunk.subarray(toHead)
+    if (rest.length === 0) return
+    this.tail.push(rest.length > this.tailSize ? rest.slice(rest.length - this.tailSize) : rest.slice())
+    this.tailLength += Math.min(rest.length, this.tailSize)
+    while (this.tailLength - this.tail[0]!.length >= this.tailSize) this.tailLength -= this.tail.shift()!.length
+  }
+
+  text(): string {
+    const tail = new Uint8Array(this.tailLength)
+    let offset = 0
+    for (const chunk of this.tail) {
+      tail.set(chunk, offset)
+      offset += chunk.length
+    }
+    const kept = tail.subarray(Math.max(this.tailLength - this.tailSize, 0))
+    const omitted = this.total - this.headLength - kept.length
+    if (omitted === 0) {
+      const all = new Uint8Array(this.headLength + kept.length)
+      all.set(this.head.subarray(0, this.headLength))
+      all.set(kept, this.headLength)
+      return new TextDecoder().decode(all)
+    }
+    // Drop the partial characters on both sides of the cut.
+    const head = new TextDecoder().decode(this.head.subarray(0, this.headLength), { stream: true })
+    let start = 0
+    while (start < kept.length && (kept[start]! & 0xc0) === 0x80) start++
+    return `${head}\n… ${omitted} bytes omitted …\n${new TextDecoder().decode(kept.subarray(start))}`
+  }
 }
 
 /** Variables from the server's environment that commands run as the bot user still get. */
@@ -41,9 +86,10 @@ export interface CommandSpec {
 }
 
 /**
- * The process for one bot command. With `runAs` it runs as that user through `sudo`, with a clean
- * environment, and under `timeout`: the server can't signal another user's processes, so the time
- * limit has to be enforced from inside.
+ * The process for one bot command, with stderr merged into stdout so they interleave in order.
+ * With `runAs` it runs as that user through `sudo`, with a clean environment, and under `timeout`:
+ * the server can't signal another user's processes, so the time limit has to be enforced from inside.
+ * That user gets no `DISPLAY`: the desktop doesn't let bots' users in.
  */
 export const commandSpec = (options: {
   readonly command: string
@@ -54,9 +100,14 @@ export const commandSpec = (options: {
   readonly env?: Readonly<Record<string, string>>
 }): CommandSpec => {
   const env = options.env ?? childEnv()
-  const extra = { DISPLAY: options.display, TERM: "dumb", PAGER: "cat", GIT_PAGER: "cat" }
+  const extra = { TERM: "dumb", PAGER: "cat", GIT_PAGER: "cat" }
   if (options.runAs === undefined) {
-    return { command: "bash", args: ["-lc", options.command], cwd: options.workspace, env: { ...env, ...extra } }
+    return {
+      command: "bash",
+      args: ["-c", "exec bash -lc \"$1\" 2>&1", "weaver", options.command],
+      cwd: options.workspace,
+      env: { ...env, DISPLAY: options.display, ...extra }
+    }
   }
   const kept: Record<string, string> = {}
   for (const key of keptForBotUser) {
@@ -80,7 +131,7 @@ export const commandSpec = (options: {
       "bash",
       "-c",
       // sudo applies its own umask, so set ours after it; the workspace is setgid and group-shared.
-      "umask 007 && cd -- \"$1\" && exec bash -lc \"$2\"",
+      "umask 007 && cd -- \"$1\" && exec bash -lc \"$2\" 2>&1",
       "weaver",
       options.workspace,
       options.command
@@ -95,10 +146,15 @@ export const runCommandTool = (options: {
   readonly display: string
   readonly needsApproval: boolean
   readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"]
-  /** Runs commands as this user through `sudo`; undefined runs them as the server's user. */
-  readonly runAs?: string | undefined
+  /**
+   * Runs commands as this user through `sudo`; undefined runs them as the server's user. An effect
+   * is resolved on every call, so a user that couldn't be set up is retried next time.
+   */
+  readonly runAs?: string | Effect.Effect<string | undefined, ToolFailure> | undefined
 }): AgentTool => {
-  const { runAs, spawner } = options
+  const { spawner } = options
+  const resolveUser: Effect.Effect<string | undefined, ToolFailure> =
+    options.runAs === undefined || typeof options.runAs === "string" ? Effect.succeed(options.runAs) : options.runAs
 
   /** Why `sudo` can't switch to the bot user, or undefined when it can. */
   const sudoProblem = (user: string) =>
@@ -124,8 +180,12 @@ export const runCommandTool = (options: {
     name: "run_command",
     description:
       "Run a bash command on your Linux VPS. It starts in your workspace directory and can use anything installed on the machine. " +
-      `Commands run non-interactively (no stdin) and are stopped after ${defaultTimeoutSeconds} seconds unless you pass timeout_seconds. ` +
-      `GUI programs show up on the desktop the user can watch (DISPLAY=${options.display}). Output is cut to about ${outputLimit} characters.`,
+      `Commands run non-interactively (no stdin) and are stopped after ${defaultTimeoutSeconds} seconds unless you pass timeout_seconds; ` +
+      "background jobs are stopped when the command ends. " +
+      (options.runAs === undefined
+        ? `GUI programs show up on the desktop the user can watch (DISPLAY=${options.display}). `
+        : "There's no display, so GUI programs can't run. ") +
+      `Long output keeps only its first ${headBytes / 1024} KB and last ${tailBytes / 1024} KB.`,
     parameters: jsonSchemaOf(RunCommandParams),
     needsApproval: options.needsApproval,
     activity: "Running a command",
@@ -133,29 +193,30 @@ export const runCommandTool = (options: {
     run: (raw) =>
       Effect.gen(function*() {
         const params = yield* decodeParams(RunCommandParams, raw)
+        const runAs = yield* resolveUser
         const seconds = Math.min(Math.max(params.timeout_seconds ?? defaultTimeoutSeconds, 1), maxTimeoutSeconds)
         const spec = commandSpec({ command: params.command, workspace: options.workspace, display: options.display, seconds, runAs })
-        let output = ""
+        const output = new OutputBuffer()
 
+        // Detached, so stopping the command signals its whole process group, background jobs included.
         const execute = Effect.gen(function*() {
           const handle = yield* spawner.spawn(
             ChildProcess.make(spec.command, [...spec.args], {
               cwd: spec.cwd,
               env: spec.env,
               extendEnv: false,
-              stdin: "ignore"
+              stdin: "ignore",
+              detached: true,
+              ...(runAs === undefined ? { forceKillAfter: Duration.seconds(killGraceSeconds) } : {})
             })
           )
-          yield* handle.all.pipe(
-            Stream.decodeText(),
-            Stream.runForEach((chunk) =>
-              Effect.sync(() => {
-                // Keep reading so the process isn't blocked, but stop growing past what we'd keep.
-                if (output.length < outputLimit * 4) output += chunk
-              })
-            )
+          const reading = yield* handle.all.pipe(
+            Stream.runForEach((chunk) => Effect.sync(() => output.push(chunk))),
+            Effect.forkScoped
           )
-          return yield* handle.exitCode
+          const code = yield* handle.exitCode
+          yield* Fiber.join(reading).pipe(Effect.timeoutOption(Duration.millis(drainMillis)), Effect.ignore)
+          return code
         }).pipe(Effect.scoped)
 
         // As the bot user, `timeout` stops the command; this is only a backstop. Interrupting sends
@@ -164,12 +225,12 @@ export const runCommandTool = (options: {
         const startedAt = yield* Clock.currentTimeMillis
         const exit = yield* Effect.result(execute.pipe(Effect.timeoutOption(Duration.seconds(limit))))
         const overTime = (yield* Clock.currentTimeMillis) - startedAt >= seconds * 1000
-        const text = clip(output.trimEnd())
+        const text = output.text().trimEnd()
         const stopped = new ToolFailure({ message: `${text}\n\nStopped after ${seconds} seconds.`.trim() })
         if (exit._tag === "Failure") {
           // `timeout -k` kills a command that ignores SIGTERM, and sudo then dies by the same signal.
           if (runAs !== undefined && overTime) return yield* stopped
-          return yield* new ToolFailure({ message: `Couldn't run the command: ${exit.failure.message}` })
+          return yield* new ToolFailure({ message: `${text}\n\nCouldn't run the command: ${exit.failure.message}`.trim() })
         }
         const code = Option.isSome(exit.success) ? Number(exit.success.value) : undefined
         if (code === undefined || (runAs !== undefined && code === 124)) return yield* stopped

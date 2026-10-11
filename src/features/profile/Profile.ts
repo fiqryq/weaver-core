@@ -18,5 +18,20 @@ export class Health extends Schema.Class<Health>("Health")({
   status: Schema.Literal("ok"),
   version: Schema.String,
   memory: Schema.Boolean,
-  browser: Schema.Boolean
+  /** Whether the selected browser engine can be used right now. */
+  browser: Schema.Boolean,
+  browserEngine: Schema.optional(Schema.Literals(["camofox", "playwright", "none"])),
+  /** web_search and web_fetch, which work without a browser. */
+  web: Schema.optional(Schema.Boolean),
+  uptimeSeconds: Schema.optional(Schema.Number),
+  /** Bots can ask their teammates for help (`teammateIds`, handoff conversations). */
+  handoffs: Schema.optional(Schema.Boolean),
+  /** The shared skills library (`/v1/skills`, `Bot.librarySkills`). */
+  skillsLibrary: Schema.optional(Schema.Boolean),
+  /** Memory projects, each project's knowledge graph and note history (`/v1/memory`, `Bot.memoryProject`). */
+  memoryApi: Schema.optional(Schema.Boolean),
+  /** Teams of bots with a manager, a room and a private chat (`/v1/teams`). */
+  teams: Schema.optional(Schema.Boolean),
+  /** Bytes free for the server on the data folder's filesystem. */
+  dataDirFreeBytes: Schema.optional(Schema.Number)
 }) {}

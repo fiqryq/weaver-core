@@ -40,6 +40,28 @@ export const scanThreats = (content: string): ReadonlyArray<string> => {
   return [...found]
 }
 
+const threatLabels: Record<string, string> = {
+  prompt_injection: "Tells the model to ignore its previous instructions",
+  sys_prompt_override: "Tries to override the system prompt",
+  disregard_rules: "Tells the model to disregard its rules",
+  bypass_restrictions: "Tells the model to act as if it had no restrictions",
+  html_comment_injection: "Hides instructions in an HTML comment",
+  hidden_div: "Hides text in an invisible HTML element",
+  deception_hide: "Tells the model to keep something from the user",
+  exfil_curl: "Sends a secret (key, token or password) somewhere with curl",
+  exfil_wget: "Sends a secret (key, token or password) somewhere with wget",
+  read_secrets: "Reads secret files such as .env or credentials",
+  ssh_backdoor: "Touches SSH authorized_keys",
+  ssh_access: "Changes files in ~/.ssh",
+  hardcoded_secret: "Contains what looks like a hard-coded key, token or password"
+}
+
+/** A threat id in words, for the person. */
+export const threatLabel = (id: string): string =>
+  id.startsWith("invisible_unicode_")
+    ? `Contains an invisible unicode character (${id.slice("invisible_unicode_".length)}) that can hide instructions`
+    : threatLabels[id] ?? id
+
 /** A message for the first threat `after` adds that `before` didn't have, so editing an existing skill isn't blocked by what's already there. */
 export const introducedThreat = (before: string, after: string): string | undefined => {
   const existing = new Set(scanThreats(before))

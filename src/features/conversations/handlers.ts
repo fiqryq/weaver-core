@@ -1,13 +1,16 @@
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import { HttpEffect, HttpServerResponse } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
+import { AppConfig } from "../../config/Config.ts"
 import { Api } from "../../platform/http/Api.ts"
 import { BadRequest, Conflict } from "../../platform/http/errors.ts"
 import { nowIso } from "../../platform/lib/util.ts"
+import { Camofox } from "../../tools/builtin/Camofox.ts"
 import { BotRepo } from "../bots/BotRepo.ts"
 import { AgentRunner } from "../runs/AgentRunner.ts"
 import { RunEvents } from "../runs/RunEvents.ts"
-import { MessageNotFound, SendResult } from "./Conversation.ts"
+import { TeamRepo } from "../teams/TeamRepo.ts"
+import { type Conversation, MessageNotFound, SendResult } from "./Conversation.ts"
 import { ConversationRepo } from "./ConversationRepo.ts"
 
 /**
@@ -29,6 +32,12 @@ export const ConversationsHandlers = HttpApiBuilder.group(
     const bots = yield* BotRepo
     const runner = yield* AgentRunner
     const events = yield* RunEvents
+    const config = yield* AppConfig
+    const camofox = yield* Camofox
+    const teams = yield* TeamRepo
+
+    const closeTabs = (conversationId: string, botIds: ReadonlyArray<string>) =>
+      config.browser === "camofox" ? camofox.closeConversation(conversationId, botIds) : Effect.void
 
     const checkBots = (ids: ReadonlyArray<string> | undefined) =>
       Effect.gen(function*() {
@@ -37,6 +46,31 @@ export const ConversationsHandlers = HttpApiBuilder.group(
         const unknown = ids.filter((id) => !known.has(id))
         if (unknown.length > 0) return yield* new BadRequest({ message: `Unknown bot: ${unknown.join(", ")}` })
       })
+
+    /** The manager the person instructs a team through: the top-level team's. */
+    const instructedManager = (teamId: string | null) =>
+      Effect.gen(function*() {
+        const team = teamId === null ? undefined : Option.getOrUndefined(yield* Effect.option(teams.get(teamId)))
+        const top = team?.parentTeamId == null ? team : Option.getOrUndefined(yield* Effect.option(teams.get(team.parentTeamId)))
+        const manager = top === undefined ? undefined : Option.getOrUndefined(yield* Effect.option(bots.get(top.managerBotId)))
+        return manager?.name ?? "the team's manager"
+      })
+
+    const notWatchOnly = (conversation: Conversation, action: string) =>
+      Effect.gen(function*() {
+        if (conversation.kind === "handoff") {
+          return yield* new Conflict({ message: `You can watch handoffs but not ${action} in them.` })
+        }
+        if (conversation.kind === "team-room") {
+          const manager = yield* instructedManager(conversation.teamId)
+          return yield* new Conflict({
+            message: `You can watch the team room but not post in it. Give instructions to ${manager} in your private chat.`
+          })
+        }
+      })
+
+    const isTeamConversation = (conversation: Conversation) =>
+      conversation.kind === "team-room" || conversation.kind === "team-private"
 
     return handlers
       .handle("list", () => withServerNow(conversations.list))
@@ -47,17 +81,37 @@ export const ConversationsHandlers = HttpApiBuilder.group(
           conversations.create({ title: payload.title ?? "", botIds: payload.botIds })
         ))
       .handle("update", ({ params, payload }) =>
-        Effect.andThen(checkBots(payload.botIds), conversations.update(params.id, payload)))
+        Effect.gen(function*() {
+          const conversation = yield* conversations.get(params.id)
+          if (conversation.kind === "handoff" && payload.botIds !== undefined) {
+            return yield* new BadRequest({ message: "A handoff keeps the two bots it's between." })
+          }
+          if (isTeamConversation(conversation) && payload.botIds !== undefined) {
+            return yield* new BadRequest({ message: "A team's conversations follow its members; change the team instead." })
+          }
+          yield* checkBots(payload.botIds)
+          return yield* conversations.update(params.id, payload)
+        }))
       .handle("remove", ({ params }) =>
-        Effect.andThen(runner.cancelConversation(params.id), conversations.remove(params.id)))
+        Effect.gen(function*() {
+          const conversation = yield* Effect.option(conversations.get(params.id))
+          if (Option.isSome(conversation) && isTeamConversation(conversation.value)) {
+            return yield* new Conflict({ message: "This conversation belongs to a team; delete the team instead." })
+          }
+          yield* runner.whileStopped(params.id, conversations.remove(params.id))
+          if (Option.isSome(conversation)) yield* closeTabs(params.id, conversation.value.botIds)
+        }))
       .handle("messages", ({ params, query }) =>
         withServerNow(Effect.andThen(conversations.get(params.id), conversations.messages(params.id, query.after))))
       .handle("clearMessages", ({ params }) =>
         Effect.gen(function*() {
-          yield* conversations.get(params.id)
-          yield* runner.cancelConversation(params.id)
-          const messages = yield* conversations.messages(params.id)
-          yield* conversations.deleteMessages(messages.map((message) => message.id))
+          const conversation = yield* conversations.get(params.id)
+          yield* runner.whileStopped(
+            params.id,
+            Effect.flatMap(conversations.messages(params.id), (messages) =>
+              conversations.deleteMessages(messages.map((message) => message.id)))
+          )
+          yield* closeTabs(params.id, conversation.botIds)
         }))
       .handle("removeMessage", ({ params }) =>
         Effect.gen(function*() {
@@ -70,7 +124,7 @@ export const ConversationsHandlers = HttpApiBuilder.group(
         }))
       .handle("send", ({ params, payload }) =>
         Effect.gen(function*() {
-          yield* conversations.get(params.id)
+          yield* notWatchOnly(yield* conversations.get(params.id), "reply")
           const text = payload.text.trim()
           if (text.length === 0) return yield* new BadRequest({ message: "The message is empty." })
           const message = yield* conversations.insertMessage({
@@ -86,14 +140,17 @@ export const ConversationsHandlers = HttpApiBuilder.group(
         }))
       .handle("regenerate", ({ params }) =>
         Effect.gen(function*() {
-          yield* conversations.get(params.id)
+          yield* notWatchOnly(yield* conversations.get(params.id), "regenerate replies")
           if (yield* runner.isRunning(params.id)) {
             return yield* new Conflict({ message: "The bots are still replying." })
           }
           const messages = yield* conversations.messages(params.id)
           const lastUser = messages.findLastIndex((message) => message.role === "user")
           if (lastUser === -1) return yield* new BadRequest({ message: "There's nothing to regenerate yet." })
-          const latest = messages.slice(lastUser + 1).filter((message) => message.role === "assistant")
+          // A team's reports in its private chat aren't the manager's reply; they stay.
+          const latest = messages.slice(lastUser + 1).filter((message) =>
+            message.role === "assistant" && !message.parts.some((part) => part.type === "report")
+          )
           yield* conversations.deleteMessages(latest.map((message) => message.id))
           return { runId: yield* runner.start(params.id) }
         }))

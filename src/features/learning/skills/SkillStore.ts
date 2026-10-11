@@ -5,6 +5,7 @@ import { AppConfig } from "../../../config/Config.ts"
 import { nowIso } from "../../../platform/lib/util.ts"
 import { RunEvents } from "../../runs/RunEvents.ts"
 import { invalid, notFound, SkillExists, type SkillInvalid, type SkillNotFound, SkillStorageError } from "./errors.ts"
+import { applyPatch, type SkillPatch } from "./edits.ts"
 import {
   archiveDir,
   blockedAt,
@@ -12,28 +13,24 @@ import {
   freeArchivePath,
   io,
   isSkillDir,
+  type LocatedSkill,
   maxFileBytes,
   readOrUndefined,
   removeIfEmpty,
+  scanSkills,
   skillFile,
   statOrUndefined,
   supportingFiles,
   validateFilePath,
   writeAtomic
 } from "./files.ts"
-import {
-  fieldText,
-  parseFrontmatter,
-  truncateDescription,
-  validateCategory,
-  validateName,
-  validateSkillMd,
-  validName
-} from "./frontmatter.ts"
+import { fieldText, parseFrontmatter, truncateDescription, validateCategory, validateName, validateSkillMd } from "./frontmatter.ts"
 import { type SkillAuthor, SkillDetail, SkillSummary } from "./Skill.ts"
 import { introducedThreat } from "./threats.ts"
 import { parseUsage, type Usage, usageFile } from "./usage.ts"
 
+export type { SkillPatch } from "./edits.ts"
+export type { LocatedSkill } from "./files.ts"
 export { SkillExists, SkillInvalid, SkillNotFound, SkillStorageError } from "./errors.ts"
 export { maxFileBytes, maxFilePathBytes, maxPathSegmentBytes, supportDirs, validateFilePath } from "./files.ts"
 export {
@@ -54,26 +51,11 @@ export interface SkillIndexEntry {
   readonly name: string
   readonly description: string
   readonly category: string
+  /** A shared library skill assigned to the bot. */
+  readonly library?: boolean
 }
 
-export interface SkillPatch {
-  readonly old_string: string
-  readonly new_string: string
-  readonly replace_all?: boolean | undefined
-  readonly file_path?: string | undefined
-}
-
-const countOf = (text: string, search: string): number => {
-  let count = 0
-  for (let index = text.indexOf(search); index !== -1; index = text.indexOf(search, index + search.length)) count++
-  return count
-}
-
-interface Located {
-  readonly name: string
-  readonly category: string
-  readonly dir: string
-}
+type Located = LocatedSkill
 
 /** Permits on a bot's lock: every change takes one, and deleting the bot takes them all. */
 const botPermits = 1024
@@ -119,6 +101,8 @@ export class SkillStore extends Context.Service<SkillStore, {
   index(botId: string): Effect.Effect<ReadonlyArray<SkillIndexEntry>, SkillStorageError>
   /** Identifies the current SKILL.md content; undefined when there's no such skill. */
   fingerprint(botId: string, name: string): Effect.Effect<string | undefined, SkillStorageError>
+  /** Where the skill's folder is, to copy it; undefined when there's no such skill. */
+  folderOf(botId: string, name: string): Effect.Effect<LocatedSkill | undefined, SkillStorageError>
 }>()("weaver/SkillStore") {
   static readonly layer = Layer.effect(
     SkillStore,
@@ -151,25 +135,7 @@ export class SkillStore extends Context.Service<SkillStore, {
       const rootOf = (botId: string) => join(config.dataDir, "bots", botId, "skills")
       const changed = (botId: string) => events.publish({ type: "skills-changed", botId })
 
-      const scan = (botId: string) =>
-        io(async () => {
-          const root = rootOf(botId)
-          const found: Array<Located> = []
-          for (const entry of await entriesOf(root)) {
-            if (!entry.isDirectory() || !validName.test(entry.name)) continue
-            const dir = join(root, entry.name)
-            if (await isSkillDir(dir)) {
-              found.push({ name: entry.name, category: "", dir })
-              continue
-            }
-            for (const sub of await entriesOf(dir)) {
-              if (!sub.isDirectory() || !validName.test(sub.name)) continue
-              const skillDir = join(dir, sub.name)
-              if (await isSkillDir(skillDir)) found.push({ name: sub.name, category: entry.name, dir: skillDir })
-            }
-          }
-          return found.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name))
-        })
+      const scan = (botId: string) => io(() => scanSkills(rootOf(botId)))
 
       const locate = (botId: string, name: string) =>
         Effect.gen(function*() {
@@ -335,14 +301,9 @@ export class SkillStore extends Context.Service<SkillStore, {
             : yield* readExisting(located, filePath)
           const label = filePath ?? skillFile
 
-          const count = countOf(content, input.old_string)
-          if (count === 0) return yield* invalid(`old_string wasn't found in ${label}. Load it with skill_view and copy the text exactly.`)
-          if (count > 1 && input.replace_all !== true) {
-            return yield* invalid(`old_string appears ${count} times in ${label}; include more surrounding text, or set replace_all.`)
-          }
-          const updated = input.replace_all === true
-            ? content.split(input.old_string).join(input.new_string)
-            : content.replace(input.old_string, () => input.new_string)
+          const applied = applyPatch(content, input, label)
+          if (typeof applied === "string") return yield* invalid(applied)
+          const { count, updated } = applied
 
           const problem = filePath === undefined
             ? validateSkillMd(name, updated, false)
@@ -357,7 +318,7 @@ export class SkillStore extends Context.Service<SkillStore, {
           yield* io(() => writeAtomic(target, updated))
           yield* touch(botId, name, "agent")
           yield* changed(botId)
-          return input.replace_all === true ? count : 1
+          return count
         }))
       })
 
@@ -517,7 +478,8 @@ export class SkillStore extends Context.Service<SkillStore, {
         recordView,
         removeBot,
         index,
-        fingerprint
+        fingerprint,
+        folderOf: findSkill
       })
     })
   )

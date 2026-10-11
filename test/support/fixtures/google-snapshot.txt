@@ -1,0 +1,25 @@
+- heading "effect-ts typescript - Google Search"
+- searchbox "Search" [e1]: effect-ts typescript
+- navigation:
+  - link "All" [e2]
+  - link "Images" [e3]
+  - link "Videos" [e4]
+  - link "News" [e5]
+- link "Effect – The best way to build robust apps in TypeScript" [e6]:
+  - /url: https://effect.website/
+  - cite: https://effect.website
+  - text: Effect is a powerful TypeScript library designed to help developers easily create complex, synchronous, and asynchronous programs.
+- link "Effect-TS/effect: Build production-ready applications in TypeScript" [e7]:
+  - /url: https://github.com/Effect-TS/effect
+  - cite: https://github.com › Effect-TS › effect
+  - text: Effect is a powerful TypeScript framework that provides a fully-fledged functional effect system with a rich standard library.
+- link "Introduction to Effect \"the missing standard library\"" [e8]:
+  - /url: https://www.google.com/url?q=https://dev.to/effect/introduction-to-effect&sa=U&ved=2ahUKEwi
+  - cite: https://dev.to › effect
+- link "Images for effect-ts typescript" [e9]:
+  - /url: https://www.google.com/search?q=effect-ts+typescript&tbm=isch
+- heading "People also ask"
+  - button "What is Effect-TS used for?" [e10]
+  - button "Is Effect-TS production ready?" [e11]
+- navigation "pagination":
+  - link "Next" [e12]

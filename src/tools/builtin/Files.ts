@@ -1,10 +1,38 @@
 import { Effect, Schema } from "effect"
-import { chmod, chown, lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
+import { chmod, chown, lstat, mkdir, open, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { type AgentTool, decodeParams, jsonSchemaOf, shorten, ToolFailure } from "../AgentTool.ts"
 
 export const readLimit = 12_000
+/** The most of a file that's read, and the largest file that can be written or edited. */
+export const maxFileBytes = 1024 * 1024
 const listLimit = 500
+/** How much of a file is checked for NUL bytes to tell it's binary. */
+const binarySniffBytes = 8 * 1024
+
+export const formatBytes = (bytes: number): string =>
+  bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : bytes >= 1024
+    ? `${(bytes / 1024).toFixed(1)} KB`
+    : `${bytes} bytes`
+
+const isBinary = (bytes: Uint8Array): boolean => bytes.subarray(0, binarySniffBytes).includes(0)
+
+/** Reads at most `limit` bytes from the start of a regular file, with the file's full size. */
+const readStart = async (target: string, limit: number): Promise<{ bytes: Uint8Array; size: number }> => {
+  const info = await stat(target)
+  if (info.isDirectory()) throw Object.assign(new Error("is a directory"), { code: "EISDIR" })
+  if (!info.isFile()) throw new Error("not a regular file")
+  const handle = await open(target, "r")
+  try {
+    const buffer = new Uint8Array(Math.min(info.size, limit))
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+    return { bytes: buffer.subarray(0, bytesRead), size: info.size }
+  } finally {
+    await handle.close()
+  }
+}
 
 const isInside = (root: string, target: string): boolean => {
   const rel = relative(root, target)
@@ -118,7 +146,9 @@ export const fileTools = (options: {
 
   const readTool: AgentTool = {
     name: "read_file",
-    description: `Read a text file in your workspace (${workspace}). Long files are cut to about ${readLimit} characters; use offset and limit to page through them.`,
+    description:
+      `Read a text file in your workspace (${workspace}). Long files are cut to about ${readLimit} characters; use offset and limit to page through them. ` +
+      `Only the first ${formatBytes(maxFileBytes)} of a file can be read.`,
     parameters: jsonSchemaOf(ReadParams),
     needsApproval: false,
     activity: "Reading a file",
@@ -127,15 +157,22 @@ export const fileTools = (options: {
       Effect.gen(function*() {
         const params = yield* decodeParams(ReadParams, raw)
         const target = yield* resolveInWorkspace(workspace, params.path)
-        const content = yield* Effect.tryPromise({ try: () => readFile(target, "utf8"), catch: fsFailure(params.path) })
+        const file = yield* Effect.tryPromise({ try: () => readStart(target, maxFileBytes), catch: fsFailure(params.path) })
+        if (isBinary(file.bytes)) return `${params.path} is a binary file (${formatBytes(file.size)}); read_file only shows text.`
+        const truncated = file.size > file.bytes.length
+        const content = new TextDecoder().decode(file.bytes, { stream: truncated })
+        const note = truncated
+          ? `\n… (only the first ${formatBytes(maxFileBytes)} of this ${formatBytes(file.size)} file can be read)`
+          : ""
         let lines = content.split("\n")
         const start = Math.max((params.offset ?? 1) - 1, 0)
         if (params.offset !== undefined || params.limit !== undefined) {
           lines = lines.slice(start, params.limit !== undefined ? start + Math.max(params.limit, 0) : undefined)
         }
         const text = lines.join("\n")
-        if (text.length <= readLimit) return text.length > 0 ? text : "(empty file)"
-        return `${text.slice(0, readLimit)}\n… (cut; ${content.split("\n").length} lines in total, use offset and limit to read more)`
+        if (text.length <= readLimit) return `${text.length > 0 ? text : truncated ? "(nothing at this offset)" : "(empty file)"}${note}`
+        const total = `${truncated ? "more than " : ""}${content.split("\n").length} lines in total`
+        return `${text.slice(0, readLimit)}\n… (cut; ${total}, use offset and limit to read more)${note}`
       })
   }
 
@@ -166,7 +203,7 @@ export const fileTools = (options: {
 
   const writeTool: AgentTool = {
     name: "write_file",
-    description: `Create or overwrite a text file in your workspace (${workspace}).`,
+    description: `Create or overwrite a text file in your workspace (${workspace}), up to ${formatBytes(maxFileBytes)}.`,
     parameters: jsonSchemaOf(WriteParams),
     needsApproval: options.writesNeedApproval,
     activity: "Writing a file",
@@ -174,6 +211,12 @@ export const fileTools = (options: {
     run: (raw) =>
       Effect.gen(function*() {
         const params = yield* decodeParams(WriteParams, raw)
+        const size = Buffer.byteLength(params.content, "utf8")
+        if (size > maxFileBytes) {
+          return yield* new ToolFailure({
+            message: `content is ${formatBytes(size)}; write_file takes at most ${formatBytes(maxFileBytes)}. Split it into smaller files.`
+          })
+        }
         const target = yield* resolveInWorkspace(workspace, params.path)
         yield* Effect.tryPromise({
           try: async () => {
@@ -182,7 +225,7 @@ export const fileTools = (options: {
           },
           catch: fsFailure(params.path)
         })
-        return `Wrote ${params.content.length} characters to ${relative(workspace, target) || params.path}.`
+        return `Wrote ${params.content.length} characters to ${params.path.trim()}.`
       })
   }
 
@@ -197,7 +240,14 @@ export const fileTools = (options: {
       Effect.gen(function*() {
         const params = yield* decodeParams(EditParams, raw)
         const target = yield* resolveInWorkspace(workspace, params.path)
-        const content = yield* Effect.tryPromise({ try: () => readFile(target, "utf8"), catch: fsFailure(params.path) })
+        const file = yield* Effect.tryPromise({ try: () => readStart(target, maxFileBytes + 1), catch: fsFailure(params.path) })
+        if (file.size > maxFileBytes) {
+          return yield* new ToolFailure({
+            message: `${params.path} is ${formatBytes(file.size)}; edit_file only edits files up to ${formatBytes(maxFileBytes)}.`
+          })
+        }
+        if (isBinary(file.bytes)) return yield* new ToolFailure({ message: `${params.path} is a binary file; edit_file only edits text.` })
+        const content = new TextDecoder().decode(file.bytes)
         const first = content.indexOf(params.old_text)
         if (params.old_text.length === 0 || first === -1) {
           return yield* new ToolFailure({ message: `old_text wasn't found in ${params.path}.` })
@@ -208,6 +258,12 @@ export const fileTools = (options: {
           })
         }
         const updated = content.slice(0, first) + params.new_text + content.slice(first + params.old_text.length)
+        const size = Buffer.byteLength(updated, "utf8")
+        if (size > maxFileBytes) {
+          return yield* new ToolFailure({
+            message: `The edit would make ${params.path} ${formatBytes(size)}; files can be at most ${formatBytes(maxFileBytes)}.`
+          })
+        }
         yield* Effect.tryPromise({ try: () => writeFile(target, updated, "utf8"), catch: fsFailure(params.path) })
         return `Edited ${params.path}.`
       })
@@ -238,7 +294,9 @@ const shareWorkspace = async (dataDir: string, botId: string, workspace: string,
   await chmod(join(dataDir, "bots"), 0o711)
   await chmod(join(dataDir, "bots", botId), 0o711)
   const info = await stat(workspace)
-  if (info.gid !== gid || (info.mode & 0o7777) !== 0o2770) {
+  // A workspace handed to the bot's own user is weaver-bot-user's to manage (only its owner may chmod it).
+  const ours = info.uid === process.getuid?.()
+  if (ours && (info.gid !== gid || (info.mode & 0o7777) !== 0o2770)) {
     await chown(workspace, info.uid, gid)
     await chmod(workspace, 0o2770)
   }

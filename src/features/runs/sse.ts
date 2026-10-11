@@ -9,7 +9,9 @@ export const encodeEvent = (event: RunEvent): string => `event: ${event.type}\nd
 
 /**
  * Server-sent events: `/v1/events` streams every conversation, `/v1/conversations/:id/events` one of them.
- * A comment line every 15 seconds keeps idle connections open through proxies.
+ * A comment line every 15 seconds keeps idle connections open through proxies. Runs never wait on a
+ * slow client: it misses the oldest events it hasn't read (see `RunEvents`) and catches up from the
+ * messages endpoint.
  */
 export const EventsRoutes = HttpRouter.use(Effect.fn(function*(router) {
   const config = yield* AppConfig

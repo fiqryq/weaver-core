@@ -1,7 +1,10 @@
 import { Schema } from "effect"
 import { Message, ToolCallPart, ToolResultPart } from "../conversations/Conversation.ts"
 
-/** Everything streamed over `/v1/events`. Clients that reconnect catch up from the messages endpoint first. */
+/**
+ * Everything streamed over `/v1/events`. Clients that reconnect, or fall too far behind to be sent
+ * every event (see `RunEvents`), catch up from the messages endpoint first.
+ */
 export const RunEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("run-started"),
@@ -71,6 +74,15 @@ export const RunEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("skills-changed"),
     botId: Schema.String
+  }),
+  /** The shared skills library, or which bots use its skills, changed. */
+  Schema.Struct({
+    type: Schema.Literal("skill-library-changed")
+  }),
+  /** A team was created, changed, deleted, or its status or task changed; not tied to a conversation. */
+  Schema.Struct({
+    type: Schema.Literal("team-changed"),
+    teamId: Schema.String
   })
 ])
 export type RunEvent = typeof RunEvent.Type

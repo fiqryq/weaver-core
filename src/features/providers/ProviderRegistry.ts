@@ -5,6 +5,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } fr
 import { SqlClient } from "effect/sql"
 import { nowIso } from "../../platform/lib/util.ts"
 import { Settings } from "../profile/Settings.ts"
+import { normalizeChatRequests } from "./chatRequest.ts"
 import {
   findPreset,
   ProviderInfo,
@@ -34,10 +35,11 @@ export class LanguageModelFactory extends Context.Service<LanguageModelFactory, 
     LanguageModelFactory,
     LanguageModelFactory.of({
       make: (endpoint) =>
-        OpenAiLanguageModel.layer({ model: endpoint.model }).pipe(
+        OpenAiLanguageModel.layer({ model: endpoint.model, config: { strictJsonSchema: false } }).pipe(
           Layer.provide(OpenAiClient.layer({
             apiUrl: endpoint.baseUrl,
-            apiKey: endpoint.apiKey.length > 0 ? Redacted.make(endpoint.apiKey) : undefined
+            apiKey: endpoint.apiKey.length > 0 ? Redacted.make(endpoint.apiKey) : undefined,
+            transformClient: normalizeChatRequests
           })),
           Layer.provide(FetchHttpClient.layer)
         )

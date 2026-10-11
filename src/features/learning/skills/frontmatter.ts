@@ -68,6 +68,18 @@ export const validateSkillMd = (name: string, content: string, fitIndex: boolean
   return undefined
 }
 
+/** SKILL.md with its frontmatter `name:` set to `name` (added if missing); unchanged without frontmatter. */
+export const withName = (content: string, name: string): string => {
+  const text = content.replace(/^\uFEFF/, "")
+  const end = text.startsWith("---") ? /\n---\s*\n/.exec(text.slice(3)) : null
+  if (end === null) return content
+  const head = text.slice(0, end.index + 3)
+  const renamed = /^name:.*$/m.test(head)
+    ? head.replace(/^name:.*$/m, () => `name: ${name}`)
+    : head.replace(/^---[^\n]*/, (line) => `${line}\nname: ${name}`)
+  return renamed + text.slice(end.index + 3)
+}
+
 export const truncateDescription = (description: string): string => {
   const single = description.replace(/\s+/g, " ").trim()
   return single.length <= indexDescriptionLength ? single : `${single.slice(0, indexDescriptionLength - 1)}…`

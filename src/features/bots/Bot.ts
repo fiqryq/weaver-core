@@ -1,8 +1,11 @@
 import { Schema } from "effect"
 
 /** Built-in capabilities a bot can be given. Integrations (MCP servers) are listed separately. */
-export const BuiltinTool = Schema.Literals(["shell", "files", "browser", "memory", "skills"])
+export const BuiltinTool = Schema.Literals(["shell", "files", "browser", "web", "memory", "skills"])
 export type BuiltinTool = typeof BuiltinTool.Type
+
+/** What a bot gets when it's created without a tool list. */
+export const defaultTools: ReadonlyArray<BuiltinTool> = ["shell", "files", "browser", "web", "memory", "skills"]
 
 /**
  * How shell commands and file writes are handled:
@@ -32,6 +35,12 @@ export class Bot extends Schema.Class<Bot>("Bot")({
   approvalMode: ApprovalMode,
   maxSteps: Schema.Int,
   integrationIds: Schema.Array(Schema.String),
+  /** Bots it can ask for help with `ask_bot`. */
+  teammateIds: Schema.Array(Schema.String),
+  /** Skills from the shared library it can use, by name. */
+  librarySkills: Schema.Array(Schema.String),
+  /** Basic Memory project its memory lives in; empty uses the shared one. */
+  memoryProject: Schema.String,
   createdAt: Schema.String,
   updatedAt: Schema.String
 }) {}
@@ -48,7 +57,10 @@ export const BotCreate = Schema.Struct({
   tools: Schema.optional(Schema.Array(BuiltinTool)),
   approvalMode: Schema.optional(ApprovalMode),
   maxSteps: Schema.optional(Schema.Int),
-  integrationIds: Schema.optional(Schema.Array(Schema.String))
+  integrationIds: Schema.optional(Schema.Array(Schema.String)),
+  teammateIds: Schema.optional(Schema.Array(Schema.String)),
+  librarySkills: Schema.optional(Schema.Array(Schema.String)),
+  memoryProject: Schema.optional(Schema.String)
 })
 export type BotCreate = typeof BotCreate.Type
 
@@ -64,7 +76,10 @@ export const BotUpdate = Schema.Struct({
   tools: Schema.optional(Schema.Array(BuiltinTool)),
   approvalMode: Schema.optional(ApprovalMode),
   maxSteps: Schema.optional(Schema.Int),
-  integrationIds: Schema.optional(Schema.Array(Schema.String))
+  integrationIds: Schema.optional(Schema.Array(Schema.String)),
+  teammateIds: Schema.optional(Schema.Array(Schema.String)),
+  librarySkills: Schema.optional(Schema.Array(Schema.String)),
+  memoryProject: Schema.optional(Schema.String)
 })
 export type BotUpdate = typeof BotUpdate.Type
 

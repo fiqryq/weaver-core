@@ -27,7 +27,9 @@ export const ToolResultPart = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   output: Schema.String,
-  isFailure: Schema.Boolean
+  isFailure: Schema.Boolean,
+  /** On `ask_bot` results: the bot-to-bot conversation the teammate answered in. */
+  handoffConversationId: Schema.optional(Schema.String)
 })
 export type ToolResultPart = typeof ToolResultPart.Type
 
@@ -39,7 +41,23 @@ export const LearnedPart = Schema.Struct({
 })
 export type LearnedPart = typeof LearnedPart.Type
 
-export const MessagePart = Schema.Union([TextPart, ToolCallPart, ToolResultPart, LearnedPart])
+export const ReportKind = Schema.Literals(["decision", "summary", "question", "brief"])
+export type ReportKind = typeof ReportKind.Type
+
+/**
+ * A team's report: decisions, summaries and questions in the team's private chat, briefs in its room.
+ * Shown as a card; models see it as text.
+ */
+export const ReportPart = Schema.Struct({
+  type: Schema.Literal("report"),
+  kind: ReportKind,
+  teamId: Schema.String,
+  title: Schema.NullOr(Schema.String),
+  text: Schema.String
+})
+export type ReportPart = typeof ReportPart.Type
+
+export const MessagePart = Schema.Union([TextPart, ToolCallPart, ToolResultPart, LearnedPart, ReportPart])
 export type MessagePart = typeof MessagePart.Type
 
 export const MessageRole = Schema.Literals(["user", "assistant"])
@@ -80,10 +98,23 @@ export const messageText = (parts: ReadonlyArray<MessagePart>): string =>
     .join("\n\n")
     .trim()
 
+/**
+ * `handoff`: one bot asking a teammate for help with `ask_bot`; the person can watch but not reply.
+ * `team-room`: a team's manager and members working together; the person can watch but not post.
+ * `team-private`: the person and a team's manager, where the person gives the team its tasks.
+ */
+export const ConversationKind = Schema.Literals(["chat", "handoff", "team-room", "team-private"])
+export type ConversationKind = typeof ConversationKind.Type
+
 export class Conversation extends Schema.Class<Conversation>("Conversation")({
   id: Schema.String,
   title: Schema.String,
   botIds: Schema.Array(Schema.String),
+  kind: ConversationKind,
+  /** The asking bot of a handoff; null for chats. */
+  requesterBotId: Schema.NullOr(Schema.String),
+  /** The team of a team room or private chat; null otherwise. */
+  teamId: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
   updatedAt: Schema.String
 }) {}

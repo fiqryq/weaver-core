@@ -12,6 +12,8 @@ import { describeTools, makeReplyPrompt, toolOutputLimit } from "../../runs/Agen
 import { historyTurns, merged, toolTranscript } from "../../runs/PromptBuilder.ts"
 import { RunEvents } from "../../runs/RunEvents.ts"
 import { Toolbox } from "../../runs/Toolbox.ts"
+import { LibraryStore } from "../library/LibraryStore.ts"
+import { CoreMemory } from "../memory/CoreMemory.ts"
 import { SkillStore } from "../skills/SkillStore.ts"
 import { reviewPrompt, type ReviewKind } from "./reviewPrompts.ts"
 
@@ -27,6 +29,14 @@ export const reviewMaxIterations = 16
 const skillReviewTools = ["skills_list", "skill_view", skillManageTool, "read_file", "list_files"]
 const memoryReviewTools = ["search_notes", "read_note", "write_note", "edit_note"]
 const skillWriteActions: ReadonlySet<string> = new Set(["patch", "edit", "write_file"])
+
+const isUnusableCall = (error: unknown): boolean =>
+  AiError.isAiError(error) &&
+  (error.reason._tag === "ToolParameterValidationError" || error.reason._tag === "ToolNotFoundError")
+
+const unusableCallNudge =
+  "Your last tool call couldn't be used: the arguments weren't a valid JSON object, or the tool doesn't exist. " +
+  "Call one of the listed tools again with a JSON object."
 
 export interface AfterReply {
   readonly bot: Bot
@@ -62,7 +72,7 @@ export class SelfReview extends Context.Service<SelfReview, {
   /** Runs a review now and returns what it learned, which is also attached to the reviewed message. */
   review(input: ReviewRequest): Effect.Effect<ReadonlyArray<string>, ReviewFailed>
   isReviewing(botId: string): Effect.Effect<boolean>
-  /** Stops the bot's review and forgets its counters, when the bot is deleted. */
+  /** Stops the bot's review (and a Core Memory condense it started) and forgets its counters, when the bot is deleted. */
   cancel(botId: string): Effect.Effect<void>
 }>()("weaver/SelfReview") {
   static readonly layer = Layer.effect(
@@ -73,14 +83,30 @@ export class SelfReview extends Context.Service<SelfReview, {
       const providers = yield* ProviderRegistry
       const toolbox = yield* Toolbox
       const skills = yield* SkillStore
+      const library = yield* LibraryStore
       const events = yield* RunEvents
+      const coreMemory = yield* CoreMemory
       const replyPrompt = yield* makeReplyPrompt
       const reviews = yield* FiberMap.make<string>()
       const counters = new Map<string, { turnsSinceMemory: number; itersSinceSkill: number }>()
       const cancelled = new Set<string>()
 
-      const fingerprintOf = (botId: string, name: string) =>
-        skills.fingerprint(botId, name).pipe(Effect.orElseSucceed(() => undefined))
+      /** The SKILL.md fingerprint of the skill the bot's tools resolve `name` to: its own, else an assigned library skill. */
+      const fingerprintOf = (bot: Bot, name: string) =>
+        Effect.gen(function*() {
+          const own = yield* skills.fingerprint(bot.id, name)
+          if (own !== undefined || !bot.librarySkills.includes(name)) return own
+          return yield* library.fingerprint(name)
+        }).pipe(Effect.orElseSucceed(() => undefined))
+
+      /** Who wrote the skill the bot's tools resolve `name` to. */
+      const authorOf = (bot: Bot, name: string) =>
+        Effect.gen(function*() {
+          const own = yield* Effect.option(skills.get(bot.id, name))
+          if (Option.isSome(own)) return own.value.createdBy
+          if (!bot.librarySkills.includes(name)) return undefined
+          return Option.getOrUndefined(Option.map(yield* Effect.option(library.summary(name)), (skill) => skill.createdBy))
+        })
 
       /**
        * Runs one call the model made in a review, unless a guard refuses it. `viewed` holds the
@@ -103,7 +129,7 @@ export class SelfReview extends Context.Service<SelfReview, {
           const action = name === skillManageTool ? stringArg(args, "action") : undefined
 
           if (skill !== undefined && action !== undefined && skillWriteActions.has(action)) {
-            if ((yield* fingerprintOf(bot.id, skill)) !== viewed.get(skill)) {
+            if ((yield* fingerprintOf(bot, skill)) !== viewed.get(skill)) {
               viewed.delete(skill)
               return {
                 output: `SKILL.md of "${skill}" changed after you viewed it in this review. Call skill_view(name="${skill}") ` +
@@ -112,8 +138,8 @@ export class SelfReview extends Context.Service<SelfReview, {
               }
             }
             if (rewritesSkillMd(action, args)) {
-              const existing = yield* Effect.option(skills.get(bot.id, skill))
-              if (Option.isSome(existing) && existing.value.createdBy === "user") {
+              const author = yield* authorOf(bot, skill)
+              if (author !== undefined && author !== "agent") {
                 return {
                   output: `"${skill}" was written by the user, so a background review can't rewrite it with ${action}. ` +
                     `Use patch with old_string/new_string for a targeted change instead.`,
@@ -124,13 +150,13 @@ export class SelfReview extends Context.Service<SelfReview, {
           }
 
           const readsSkillMd = name === "skill_view" && skill !== undefined && stringArg(args, "file_path") === undefined
-          const before = readsSkillMd ? yield* fingerprintOf(bot.id, skill) : undefined
+          const before = readsSkillMd ? yield* fingerprintOf(bot, skill) : undefined
           const sent = name === "write_note" ? { ...args, overwrite: false } : params
           const result = yield* Effect.result(runTool(tool, sent))
           if (result._tag === "Failure") return { output: result.failure.message, isFailure: true }
           if (readsSkillMd) viewed.set(skill, before)
           else if (skill !== undefined && action !== undefined && changesSkillMd(action, args)) {
-            viewed.set(skill, yield* fingerprintOf(bot.id, skill))
+            viewed.set(skill, yield* fingerprintOf(bot, skill))
           }
           return { output: result.success, isFailure: false }
         })
@@ -193,14 +219,25 @@ export class SelfReview extends Context.Service<SelfReview, {
           >
           const response = yield* generated.pipe(
             Effect.provide(model),
-            Effect.catch((error) => fail(`The model failed: ${error.message}`))
+            Effect.map(Option.some),
+            Effect.catch((error) =>
+              isUnusableCall(error) ? Effect.succeedNone : fail(`The model failed: ${error.message}`)
+            )
           )
-          const calls = response.toolCalls
+          if (Option.isNone(response)) {
+            prompt.push({ role: "user", content: unusableCallNudge })
+            continue
+          }
+          const calls = response.value.toolCalls
           if (calls.length === 0) break
 
+          const text = response.value.text
           prompt.push({
             role: "assistant",
-            content: calls.map((call) => ({ type: "tool-call", id: call.id, name: call.name, params: call.params }))
+            content: [
+              ...(text.trim().length > 0 ? [{ type: "text" as const, text }] : []),
+              ...calls.map((call) => ({ type: "tool-call" as const, id: call.id, name: call.name, params: call.params }))
+            ]
           })
           const results: Array<Prompt.ToolResultPartEncoded> = []
           for (const call of calls) {
@@ -243,6 +280,7 @@ export class SelfReview extends Context.Service<SelfReview, {
         Effect.gen(function*() {
           const { bot } = input
           if (cancelled.has(bot.id)) return
+          yield* coreMemory.condenseIfDue(bot)
           const counter = counters.get(bot.id) ?? { turnsSinceMemory: 0, itersSinceSkill: 0 }
           counters.set(bot.id, counter)
           const kinds = new Set<ReviewKind>()
@@ -281,7 +319,7 @@ export class SelfReview extends Context.Service<SelfReview, {
           Effect.suspend(() => {
             cancelled.add(botId)
             counters.delete(botId)
-            return FiberMap.remove(reviews, botId)
+            return Effect.andThen(FiberMap.remove(reviews, botId), coreMemory.cancel(botId))
           })
       })
     })

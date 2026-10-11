@@ -3,6 +3,7 @@ import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api"
 import { Authorization } from "../../platform/http/Authorization.ts"
 import { BadRequest, Conflict } from "../../platform/http/errors.ts"
 import { BotNotFound } from "../bots/Bot.ts"
+import { Catalog, InstallResult, LibrarySkillDetail, LibrarySkillSummary } from "./library/LibrarySkill.ts"
 import { SkillDetail, SkillNotFound, SkillSummary } from "./skills/SkillStore.ts"
 
 const IdParams = { id: Schema.String }
@@ -52,4 +53,67 @@ export class SkillsApi extends HttpApiGroup.make("skills")
   )
   .middleware(Authorization)
   .prefix("/v1/bots")
+{}
+
+const NameParams = { name: Schema.String }
+const BotIds = Schema.optional(Schema.Array(Schema.String))
+
+export const LibraryCreate = Schema.Struct({
+  name: Schema.String,
+  content: Schema.String,
+  category: Schema.optional(Schema.String),
+  assignBotIds: BotIds
+})
+
+export const LibraryInstall = Schema.Struct({
+  url: Schema.String,
+  assignBotIds: BotIds,
+  force: Schema.optional(Schema.Boolean),
+  name: Schema.optional(Schema.String)
+})
+
+export const LibraryImport = Schema.Struct({
+  zipBase64: Schema.optional(Schema.String),
+  files: Schema.optional(Schema.Array(Schema.Struct({ path: Schema.String, contentBase64: Schema.String }))),
+  assignBotIds: BotIds,
+  force: Schema.optional(Schema.Boolean),
+  name: Schema.optional(Schema.String)
+})
+
+/** The shared skills library, assigned to bots through `Bot.librarySkills`. */
+export class LibraryApi extends HttpApiGroup.make("library")
+  .add(
+    HttpApiEndpoint.get("list", "/", { success: Schema.Struct({ skills: Schema.Array(LibrarySkillSummary) }) }),
+    HttpApiEndpoint.get("catalog", "/catalog", { success: Catalog }),
+    HttpApiEndpoint.post("create", "/", { payload: LibraryCreate, success: LibrarySkillDetail, error: [BadRequest, Conflict] }),
+    HttpApiEndpoint.post("install", "/install", { payload: LibraryInstall, success: InstallResult, error: [BadRequest, Conflict] }),
+    HttpApiEndpoint.post("import", "/import", { payload: LibraryImport, success: InstallResult, error: [BadRequest, Conflict] }),
+    HttpApiEndpoint.post("promote", "/promote", {
+      payload: Schema.Struct({ botId: Schema.String, name: Schema.String }),
+      success: LibrarySkillDetail,
+      error: [BotNotFound, SkillNotFound, BadRequest, Conflict]
+    }),
+    HttpApiEndpoint.get("get", "/:name", { params: NameParams, success: LibrarySkillDetail, error: SkillNotFound }),
+    HttpApiEndpoint.get("file", "/:name/file", {
+      params: NameParams,
+      query: { path: Schema.String },
+      success: Schema.Struct({ path: Schema.String, content: Schema.String }),
+      error: [SkillNotFound, BadRequest]
+    }),
+    HttpApiEndpoint.put("put", "/:name", {
+      params: NameParams,
+      payload: Schema.Struct({ content: Schema.String }),
+      success: LibrarySkillDetail,
+      error: [SkillNotFound, BadRequest]
+    }),
+    HttpApiEndpoint.delete("remove", "/:name", { params: NameParams, success: HttpApiSchema.NoContent, error: SkillNotFound }),
+    HttpApiEndpoint.put("bots", "/:name/bots", {
+      params: NameParams,
+      payload: Schema.Struct({ botIds: Schema.Array(Schema.String) }),
+      success: LibrarySkillSummary,
+      error: [SkillNotFound, BadRequest]
+    })
+  )
+  .middleware(Authorization)
+  .prefix("/v1/skills")
 {}

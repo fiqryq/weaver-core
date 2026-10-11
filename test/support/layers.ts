@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { BunServices } from "@effect/platform-bun"
 import { Duration, Effect, Fiber, Layer, Option, Stream } from "effect"
 import { LanguageModel, type Response } from "effect/ai"
-import { AppConfig } from "../../src/config/Config.ts"
+import { AppConfig, type AppConfigShape } from "../../src/config/Config.ts"
 import type { BotCreate } from "../../src/features/bots/Bot.ts"
 import { BotRepo } from "../../src/features/bots/BotRepo.ts"
 import { ConversationRepo } from "../../src/features/conversations/ConversationRepo.ts"
@@ -74,12 +74,16 @@ export const scriptedModel = (script: Script) => {
 export const tempDir = () => mkdtempSync(join(tmpdir(), "weaver-test-"))
 
 /** Every service the API uses, on an in-memory database, with the given model and data directory. */
-export const testLayer = (model: Layer.Layer<LanguageModelFactory>, dataDir = tempDir()) =>
+export const testLayer = (
+  model: Layer.Layer<LanguageModelFactory>,
+  dataDir = tempDir(),
+  config: Partial<AppConfigShape> = {}
+) =>
   AppServices.pipe(
     Layer.provideMerge(model),
     Layer.provideMerge(DatabaseTest),
     Layer.provideMerge(BunServices.layer),
-    Layer.provideMerge(AppConfig.layerTest({ dataDir, memory: Option.none(), browserCommand: [] }))
+    Layer.provideMerge(AppConfig.layerTest({ dataDir, memory: Option.none(), browserCommand: [], ...config }))
   )
 
 /** Saves an API key for the default provider so runs can reach the (scripted) model. */
@@ -101,14 +105,18 @@ export const createConversation = (botIds: ReadonlyArray<string>) =>
   })
 
 /** Collects a conversation's events until the predicate matches; start it before triggering the run. */
-export const collectUntil = (conversationId: string, until: (event: RunEvent) => boolean) =>
+export const collectUntil = (
+  conversationId: string,
+  until: (event: RunEvent) => boolean,
+  timeout: Duration.Input = Duration.seconds(10)
+) =>
   Effect.gen(function*() {
     const events = yield* RunEvents
     const fiber = yield* events.subscribe(conversationId).pipe(
       Stream.takeUntil(until),
       Stream.runCollect,
-      Effect.timeout(Duration.seconds(10)),
-      Effect.forkChild
+      Effect.timeout(timeout),
+      Effect.forkChild({ startImmediately: true })
     )
     // Give the subscription a moment to attach before anything is published.
     yield* Effect.sleep(Duration.millis(20))
@@ -125,9 +133,9 @@ export const send = (conversationId: string, text: string) =>
   })
 
 /** Sends a message and waits for the whole run to finish, returning its events. */
-export const sendAndWait = (conversationId: string, text: string) =>
+export const sendAndWait = (conversationId: string, text: string, timeout?: Duration.Input) =>
   Effect.gen(function*() {
-    const fiber = yield* collectUntil(conversationId, (event) => event.type === "run-finished")
+    const fiber = yield* collectUntil(conversationId, (event) => event.type === "run-finished", timeout)
     yield* send(conversationId, text)
     return yield* Fiber.join(fiber)
   })

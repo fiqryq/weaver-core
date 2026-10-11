@@ -1,37 +1,47 @@
-import { Clock, Context, Effect, Layer, Option } from "effect"
+import { Context, Effect, Layer, Option, Predicate } from "effect"
 import { ChildProcessSpawner } from "effect/process"
 import { SqlClient } from "effect/sql"
 import { AppConfig } from "../../config/Config.ts"
-import type { AgentTool } from "../../tools/AgentTool.ts"
+import { BotUsers } from "../../platform/os/BotUsers.ts"
+import { type AgentTool, ToolFailure } from "../../tools/AgentTool.ts"
+import { browserTools } from "../../tools/builtin/Browser.ts"
+import { Camofox } from "../../tools/builtin/Camofox.ts"
 import { ensureWorkspace, fileTools } from "../../tools/builtin/Files.ts"
 import { browserTitle, mcpTool, sanitizeToolName, slugify } from "../../tools/builtin/Mcp.ts"
 import {
   allowedMemoryTools,
   attribute,
-  coreCacheMillis,
+  botMemoryProject,
   coreExcerpt,
-  corePermalink,
   memoryActivity,
   memoryServerConfig,
   memoryTitle,
-  noteContent,
   pinProject
 } from "../../tools/builtin/Memory.ts"
 import { runCommandTool } from "../../tools/builtin/Shell.ts"
+import { webTools } from "../../tools/builtin/Web.ts"
 import { sessionSearchTool } from "../../tools/learning/SessionSearch.ts"
 import { skillTools } from "../../tools/learning/Skills.ts"
 import type { Bot } from "../bots/Bot.ts"
 import { toMcpConfig } from "../integrations/integrationConfig.ts"
 import { IntegrationRepo } from "../integrations/IntegrationRepo.ts"
 import { McpHub, type McpServerConfig } from "../integrations/McpHub.ts"
+import { LibraryStore } from "../learning/library/LibraryStore.ts"
+import { CoreMemory } from "../learning/memory/CoreMemory.ts"
+import type { RecalledNote } from "../learning/memory/recall.ts"
 import { type SkillIndexEntry, SkillStore } from "../learning/skills/SkillStore.ts"
+import { KnowledgeBase, writeTarget } from "../memory/KnowledgeBase.ts"
 
 export interface BotTools {
   readonly tools: ReadonlyArray<AgentTool>
   readonly workspace: string
   readonly memoryEnabled: boolean
+  /** The bot's own memory project, when it doesn't use the shared one. */
+  readonly memoryProject: string | undefined
   readonly coreMemory: string | undefined
-  /** The bot's skills for the prompt index; empty when skills are off. */
+  /** Notes related to the message being answered; empty unless a recall query was given. */
+  readonly recall: ReadonlyArray<RecalledNote>
+  /** The bot's skills and its library skills for the prompt index; empty when skills are off. */
   readonly skills: ReadonlyArray<SkillIndexEntry>
   /** Integrations the bot can use, with the prefix their tools carry. */
   readonly integrations: ReadonlyArray<{ readonly name: string; readonly prefix: string }>
@@ -39,10 +49,18 @@ export interface BotTools {
   readonly unavailable: ReadonlyArray<string>
 }
 
+export interface ForBotOptions {
+  readonly conversationId?: string
+  readonly recallQuery?: string | undefined
+}
+
 /** Assembles the tools a bot gets for one reply, from its settings and the integrations it's allowed to use. */
 export class Toolbox extends Context.Service<Toolbox, {
-  /** `conversationId` is the chat being answered; past-chat search leaves it out. */
-  forBot(bot: Bot, options?: { readonly conversationId?: string }): Effect.Effect<BotTools>
+  /**
+   * `conversationId` is the chat being answered; past-chat search leaves it out. `recallQuery` is
+   * searched in memory for related notes, alongside the Core Memory read.
+   */
+  forBot(bot: Bot, options?: ForBotOptions): Effect.Effect<BotTools>
 }>()("weaver/Toolbox") {
   static readonly layer = Layer.effect(
     Toolbox,
@@ -52,11 +70,14 @@ export class Toolbox extends Context.Service<Toolbox, {
       const integrations = yield* IntegrationRepo
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
       const skillStore = yield* SkillStore
+      const library = yield* LibraryStore
       const sql = yield* SqlClient.SqlClient
+      const botUsers = yield* BotUsers
+      const camofox = yield* Camofox
+      const coreMemory = yield* CoreMemory
+      const knowledge = yield* KnowledgeBase
 
-      let coreCache: { text: string | undefined; fetchedAt: number } | undefined
-
-      const browserServer: McpServerConfig | undefined = config.browserCommand.length > 0
+      const browserServer: McpServerConfig | undefined = config.browser === "playwright" && config.browserCommand.length > 0
         ? {
           key: "builtin:browser",
           name: "Browser",
@@ -69,22 +90,7 @@ export class Toolbox extends Context.Service<Toolbox, {
         }
         : undefined
 
-      const coreMemory = (server: McpServerConfig, project: string) =>
-        Effect.gen(function*() {
-          const now = yield* Clock.currentTimeMillis
-          if (coreCache !== undefined && now - coreCache.fetchedAt < coreCacheMillis) return coreCache.text
-          const result = yield* hub.call(
-            server,
-            "read_note",
-            pinProject({ identifier: corePermalink, output_format: "json" }, project)
-          ).pipe(Effect.option)
-          const text = Option.flatMap(result, (r) => Option.fromNullishOr(r.isError ? undefined : noteContent(r.text)))
-          const excerpt = Option.getOrUndefined(Option.flatMap(text, (t) => Option.fromNullishOr(coreExcerpt(t))))
-          coreCache = { text: excerpt, fetchedAt: now }
-          return excerpt
-        })
-
-      const forBot = Effect.fn("Toolbox.forBot")(function*(bot: Bot, options?: { readonly conversationId?: string }) {
+      const forBot = Effect.fn("Toolbox.forBot")(function*(bot: Bot, options?: ForBotOptions) {
         const workspace = yield* ensureWorkspace(config.dataDir, bot.id, Option.getOrUndefined(config.botUser))
         const tools: Array<AgentTool> = []
         const unavailable: Array<string> = []
@@ -99,7 +105,7 @@ export class Toolbox extends Context.Service<Toolbox, {
             display: config.display,
             needsApproval: ask,
             spawner,
-            runAs: Option.getOrUndefined(Option.map(config.botUser, (botUser) => botUser.user))
+            runAs: botUsers.userFor(bot.id).pipe(Effect.mapError((error) => new ToolFailure({ message: error.message })))
           }))
         }
         if (enabled.has("files")) {
@@ -108,8 +114,13 @@ export class Toolbox extends Context.Service<Toolbox, {
 
         let skills: ReadonlyArray<SkillIndexEntry> = []
         if (enabled.has("skills")) {
-          tools.push(...skillTools({ store: skillStore, botId: bot.id }))
-          const indexed = yield* Effect.result(skillStore.index(bot.id))
+          tools.push(...skillTools({ store: skillStore, botId: bot.id, library, assigned: bot.librarySkills, workspace }))
+          const indexed = yield* Effect.result(Effect.gen(function*() {
+            const own = yield* skillStore.index(bot.id)
+            const ownNames = new Set(own.map((skill) => skill.name))
+            const shared = yield* library.index(bot.librarySkills.filter((name) => !ownNames.has(name)))
+            return [...own, ...shared]
+          }))
           if (indexed._tag === "Success") skills = indexed.success
           else unavailable.push(`Skills (${indexed.failure.message})`)
         }
@@ -118,14 +129,17 @@ export class Toolbox extends Context.Service<Toolbox, {
         }
 
         let memoryEnabled = false
+        let ownProject: string | undefined
         let core: string | undefined
+        let recall: ReadonlyArray<RecalledNote> = []
         if (enabled.has("memory") && Option.isSome(config.memory)) {
           const memory = config.memory.value
           const server = memoryServerConfig(memory)
+          const project = botMemoryProject(bot, memory.project)
           const listed = yield* Effect.result(hub.tools(server))
           if (listed._tag === "Success") {
             for (const tool of listed.success.filter((tool) => allowedMemoryTools.has(tool.name))) {
-              tools.push(mcpTool({
+              const memoryTool = mcpTool({
                 hub,
                 server,
                 tool,
@@ -133,19 +147,51 @@ export class Toolbox extends Context.Service<Toolbox, {
                 activity: memoryActivity(tool.name),
                 title: memoryTitle(tool.name),
                 prepare: (args) => {
-                  if (tool.name === "write_note" || tool.name === "edit_note") coreCache = undefined
-                  const pinned = pinProject(args, memory.project)
+                  const pinned = pinProject(args, project)
                   return tool.name === "write_note" ? attribute(pinned, bot.name) : pinned
                 }
-              }))
+              })
+              tools.push(
+                tool.name === "write_note" || tool.name === "edit_note"
+                  ? {
+                    ...memoryTool,
+                    // The note's history keeps what the bot replaced and what it wrote.
+                    run: (params) => {
+                      const target = Predicate.isObject(params) ? writeTarget(tool.name, params as Record<string, unknown>) : undefined
+                      return Effect.gen(function*() {
+                        if (target !== undefined) yield* knowledge.capture(project, target, "")
+                        const output = yield* memoryTool.run(params)
+                        if (target !== undefined) yield* knowledge.captureLater(project, target, bot.name)
+                        return output
+                      }).pipe(Effect.ensuring(coreMemory.invalidate(project)))
+                    }
+                  }
+                  : memoryTool
+              )
             }
             memoryEnabled = true
-            core = yield* coreMemory(server, memory.project)
+            ownProject = project === memory.project ? undefined : project
+            const query = config.memoryRecall ? options?.recallQuery : undefined
+            const [text, recalled] = yield* Effect.all([
+              coreMemory.text(project),
+              query === undefined ? Effect.succeed([]) : coreMemory.recall(query, project)
+            ], { concurrency: "unbounded" })
+            core = coreExcerpt(text ?? "")
+            recall = recalled
           } else {
             unavailable.push(`Memory (${listed.failure.message})`)
           }
         }
 
+        const owner = { botId: bot.id, conversationId: options?.conversationId ?? "default" }
+        const usesCamofox = config.browser === "camofox"
+        if (enabled.has("web")) {
+          tools.push(...webTools({ camofox: usesCamofox ? camofox : undefined, owner }))
+        }
+        if (enabled.has("browser") && usesCamofox) {
+          if (yield* camofox.available) tools.push(...browserTools({ camofox, owner, workspace }))
+          else unavailable.push(`Browser (the browser service isn't running at ${camofox.url})`)
+        }
         if (enabled.has("browser") && browserServer !== undefined) {
           const listed = yield* Effect.result(hub.tools(browserServer))
           if (listed._tag === "Success") {
@@ -198,7 +244,9 @@ export class Toolbox extends Context.Service<Toolbox, {
           tools: unique,
           workspace,
           memoryEnabled,
+          memoryProject: ownProject,
           coreMemory: core,
+          recall,
           skills,
           integrations: connected,
           unavailable

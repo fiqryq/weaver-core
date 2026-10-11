@@ -8,7 +8,9 @@ import { AppConfig, type AppConfigShape } from "../../../src/config/Config.ts"
 import type { Bot, BotCreate } from "../../../src/features/bots/Bot.ts"
 import { BotRepo } from "../../../src/features/bots/BotRepo.ts"
 import { ConversationRepo } from "../../../src/features/conversations/ConversationRepo.ts"
+import { CoreMemory } from "../../../src/features/learning/memory/CoreMemory.ts"
 import { type AfterReply, learnedText, reviewGuard, SelfReview } from "../../../src/features/learning/review/SelfReview.ts"
+import { LibraryStore } from "../../../src/features/learning/library/LibraryStore.ts"
 import { SkillStore } from "../../../src/features/learning/skills/SkillStore.ts"
 import { Settings } from "../../../src/features/profile/Settings.ts"
 import { LanguageModelFactory, ProviderRegistry } from "../../../src/features/providers/ProviderRegistry.ts"
@@ -20,6 +22,7 @@ import { type BotTools, Toolbox } from "../../../src/features/runs/Toolbox.ts"
 import { DatabaseTest } from "../../../src/platform/db/Database.ts"
 import { type AgentTool, ToolFailure } from "../../../src/tools/AgentTool.ts"
 import { skillTools } from "../../../src/tools/learning/Skills.ts"
+import { fakeMemory } from "../../support/fakeMemory.ts"
 
 const skillMd = (name: string, body: string) => `---\nname: ${name}\ndescription: Use when testing.\n---\n\n${body}`
 
@@ -136,20 +139,25 @@ const fakeTools = () => {
 }
 
 /** A fixed tool list, or one built per bot from the real skill store. */
-type TestTools = ReadonlyArray<AgentTool> | ((store: SkillStore["Service"], botId: string) => ReadonlyArray<AgentTool>)
+type TestTools =
+  | ReadonlyArray<AgentTool>
+  | ((store: SkillStore["Service"], botId: string, library: LibraryStore["Service"], bot: Bot) => ReadonlyArray<AgentTool>)
 
 const toolboxLayer = (tools: TestTools) =>
   Layer.effect(
     Toolbox,
     Effect.gen(function*() {
       const store = yield* SkillStore
+      const library = yield* LibraryStore
       return Toolbox.of({
         forBot: (bot) =>
           Effect.succeed({
-            tools: typeof tools === "function" ? tools(store, bot.id) : tools,
+            tools: typeof tools === "function" ? tools(store, bot.id, library, bot) : tools,
             workspace: "/tmp/weaver-test-workspace",
             memoryEnabled: false,
+            memoryProject: undefined,
             coreMemory: undefined,
+            recall: [],
             skills: [],
             integrations: [],
             unavailable: []
@@ -163,7 +171,9 @@ const baseLayer = (
   tools: TestTools,
   config: Partial<AppConfigShape>
 ) =>
-  Layer.mergeAll(toolboxLayer(tools), ProviderRegistry.layer, Approvals.layer).pipe(
+  Layer.mergeAll(toolboxLayer(tools), CoreMemory.layer.pipe(Layer.provideMerge(fakeMemory().layer)), Approvals.layer).pipe(
+    Layer.provideMerge(ProviderRegistry.layer),
+    Layer.provideMerge(LibraryStore.layer),
     Layer.provideMerge(SkillStore.layer),
     Layer.provideMerge(RunEvents.layer),
     Layer.provideMerge(Layer.mergeAll(BotRepo.layer, ConversationRepo.layer, Settings.layer)),
@@ -592,6 +602,41 @@ describe("SelfReview.review", () => {
       expect(archived[0]).toMatch(/^notes-/)
       expect(readFileSync(join(archive, archived[0]!, "SKILL.md"), "utf8")).toBe(original)
     }).pipe(Effect.provide(reviewLayer(model.layer, (store, botId) => skillTools({ store, botId }))))
+  })
+
+  it.live("patches an assigned library skill (archiving it first) but creates new skills in the bot's own store", () => {
+    const model = fakeModel({
+      review: (call) =>
+        Effect.succeed(
+          call.index === 0
+            ? toolCalls(["skill_view", { name: "shared-notes" }])
+            : call.index === 1
+            ? toolCalls(
+              ["skill_manage", { action: "edit", name: "shared-notes", content: skillMd("shared-notes", "Rewritten.\n") }],
+              ["skill_manage", { action: "patch", name: "shared-notes", old_string: "Keep it short.", new_string: "Keep it very short." }],
+              ["skill_manage", { action: "create", name: "smoke-tests", content: skillMd("smoke-tests", "Run the smoke test first.\n") }]
+            )
+            : answer("Done.")
+        )
+    })
+    return Effect.gen(function*() {
+      const library = yield* LibraryStore
+      const original = skillMd("shared-notes", "Keep it short.\n")
+      yield* library.create({ name: "shared-notes", content: original })
+      const { bot, conversation, message } = yield* setup({ librarySkills: ["shared-notes"] })
+
+      const learned = yield* (yield* SelfReview).review({ bot, conversationId: conversation.id, messageId: message.id, kinds: new Set(["skills"]) })
+      expect(learned).toEqual(['Updated skill "shared-notes"', 'Created skill "smoke-tests"'])
+      expect(model.reviews[2]!.prompt).toContain("was written by the user")
+      expect((yield* library.get("shared-notes")).content).toContain("Keep it very short.")
+      const archive = join((yield* AppConfig).dataDir, "skills-library", ".archive")
+      const archived = readdirSync(archive)
+      expect(archived).toHaveLength(1)
+      expect(readFileSync(join(archive, archived[0]!, "SKILL.md"), "utf8")).toBe(original)
+      expect((yield* (yield* SkillStore).get(bot.id, "smoke-tests")).createdBy).toBe("agent")
+      expect([...(yield* library.names)]).toEqual(["shared-notes"])
+    }).pipe(Effect.provide(reviewLayer(model.layer, (store, botId, library, bot) =>
+      skillTools({ store, botId, library, assigned: bot.librarySkills }))))
   })
 
   it.live("shows the reviewed reply's tool calls in the review prompt", () => {

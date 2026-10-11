@@ -221,6 +221,124 @@ describe("AgentRunner", () => {
     }).pipe(Effect.provide(testLayer(model.layer)))
   })
 
+  it.live("keeps text streamed before a tool call in the next round's prompt and in later history", () => {
+    const model = scriptedModel((call) =>
+      call.index === 0
+        ? [
+          { type: "text-start", id: "t" },
+          { type: "text-delta", id: "t", delta: "Let me check the folder." },
+          { type: "text-end", id: "t" },
+          ...callTool("list_files", {})
+        ]
+        : say(call.index === 1 ? "It's empty." : "You're welcome.")
+    )
+    return Effect.gen(function*() {
+      yield* withProviderKey
+      const bot = yield* createBot({ name: "Ada", tools: ["files"] })
+      const conversation = yield* createConversation([bot.id])
+      yield* sendAndWait(conversation.id, "What's in your workspace?")
+
+      const assistantTurn = JSON.parse(model.calls[1]!.prompt).at(-2)
+      expect(assistantTurn).toMatchObject({
+        role: "assistant",
+        content: [{ type: "text", text: "Let me check the folder." }, { type: "tool-call", name: "list_files" }]
+      })
+
+      yield* sendAndWait(conversation.id, "Thanks")
+      const history = JSON.parse(model.calls[2]!.prompt) as Array<{ role: string; content: unknown }>
+      expect(history.filter((turn) => turn.role === "assistant")).toMatchObject([
+        { content: [{ type: "text", text: "Let me check the folder.\n\nIt's empty." }] }
+      ])
+    }).pipe(Effect.provide(testLayer(model.layer)))
+  })
+
+  it.live("cancelBot stops every run the bot is part of and leaves the others", () => {
+    const model = scriptedModel((call) => callTool("run_command", { command: "echo waiting" }, `c${call.index}`))
+    return Effect.gen(function*() {
+      yield* withProviderKey
+      const ada = yield* createBot({ name: "Ada", tools: ["shell"], approvalMode: "ask" })
+      const bo = yield* createBot({ name: "Bo", tools: ["shell"], approvalMode: "ask" })
+      const alone = yield* createConversation([ada.id])
+      const other = yield* createConversation([bo.id])
+      // Bo replies first here, so Ada is only waiting her turn.
+      const group = yield* createConversation([bo.id, ada.id])
+      for (const conversation of [alone, other, group]) {
+        const requested = yield* collectUntil(conversation.id, (event) => event.type === "approval-requested")
+        yield* send(conversation.id, "Run something")
+        yield* Fiber.join(requested)
+      }
+
+      const runner = yield* AgentRunner
+      yield* runner.cancelBot(ada.id)
+      expect(yield* runner.isRunning(alone.id)).toBe(false)
+      expect(yield* runner.isRunning(group.id)).toBe(false)
+      expect(yield* runner.isRunning(other.id)).toBe(true)
+      expect((yield* lastMessage(group.id)).status).toBe("cancelled")
+      expect((yield* lastMessage(other.id)).status).toBe("streaming")
+      expect(yield* (yield* Approvals).pending).toHaveLength(1)
+
+      yield* runner.cancelBot("unknown-bot")
+      expect(yield* runner.isRunning(other.id)).toBe(true)
+      yield* runner.cancelBot(bo.id)
+      expect(yield* runner.isRunning(other.id)).toBe(false)
+    }).pipe(Effect.provide(testLayer(model.layer)))
+  })
+
+  it.live("whileStopped cancels the run and holds off a new one until it's done", () => {
+    const model = scriptedModel((call) => call.index === 0 ? callTool("run_command", { command: "echo never" }) : say("Fresh start."))
+    return Effect.gen(function*() {
+      yield* withProviderKey
+      const bot = yield* createBot({ name: "Ada", tools: ["shell"], approvalMode: "ask" })
+      const conversation = yield* createConversation([bot.id])
+      const requested = yield* collectUntil(conversation.id, (event) => event.type === "approval-requested")
+      yield* send(conversation.id, "Run something")
+      yield* Fiber.join(requested)
+
+      const runner = yield* AgentRunner
+      const conversations = yield* ConversationRepo
+      const finished = yield* collectUntil(conversation.id, (event) => event.type === "run-finished" && event.status === "done")
+      let restart: Fiber.Fiber<string> | undefined
+      yield* runner.whileStopped(
+        conversation.id,
+        Effect.gen(function*() {
+          expect(yield* runner.isRunning(conversation.id)).toBe(false)
+          restart = yield* Effect.forkChild(send(conversation.id, "Again"))
+          yield* Effect.sleep("50 millis")
+          const messages = yield* conversations.messages(conversation.id)
+          expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "user"])
+          yield* conversations.deleteMessages(messages.map((message) => message.id))
+        })
+      )
+      yield* Fiber.join(restart!)
+      yield* Fiber.join(finished)
+      const messages = yield* conversations.messages(conversation.id)
+      expect(messages.map((message) => [message.role, messageText(message.parts)])).toEqual([["assistant", "Fresh start."]])
+    }).pipe(Effect.provide(testLayer(model.layer)))
+  })
+
+  it.live("doesn't announce or rewrite a reply that was deleted while it ran", () => {
+    const model = scriptedModel((call) => call.index === 0 ? callTool("run_command", { command: "echo hi" }) : say("Ran it."))
+    return Effect.gen(function*() {
+      yield* withProviderKey
+      const bot = yield* createBot({ name: "Ada", tools: ["shell"], approvalMode: "ask" })
+      const conversation = yield* createConversation([bot.id])
+      const finished = yield* collectUntil(conversation.id, (event) => event.type === "run-finished")
+      const requested = yield* collectUntil(conversation.id, (event) => event.type === "approval-requested")
+      yield* send(conversation.id, "Run echo")
+      const request = (yield* Fiber.join(requested)).at(-1)!
+      if (request.type !== "approval-requested") throw new Error("expected an approval request")
+
+      const conversations = yield* ConversationRepo
+      yield* conversations.deleteMessages([request.messageId])
+      yield* (yield* Approvals).resolve(request.approvalId, true)
+      const events = yield* Fiber.join(finished)
+
+      expect(events.at(-1)).toMatchObject({ type: "run-finished", status: "done" })
+      expect(events.some((event) => event.type === "message-done" && event.message.id === request.messageId)).toBe(false)
+      expect((yield* conversations.messages(conversation.id)).map((message) => message.role)).toEqual(["user"])
+    }).pipe(Effect.provide(testLayer(model.layer)))
+  })
+
   it.live("streams text deltas to subscribers of every conversation", () => {
     const model = scriptedModel(() => say("Hello there"))
     return Effect.gen(function*() {

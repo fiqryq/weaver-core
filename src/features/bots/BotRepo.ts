@@ -9,7 +9,8 @@ import {
   BuiltinTool,
   type BotUpdate,
   defaultMaxSteps,
-  defaultSystemPrompt
+  defaultSystemPrompt,
+  defaultTools
 } from "./Bot.ts"
 
 interface BotRow {
@@ -26,6 +27,9 @@ interface BotRow {
   readonly approval_mode: string
   readonly max_steps: number
   readonly integration_ids: string
+  readonly teammate_ids: string
+  readonly library_skills: string
+  readonly memory_project: string
   readonly created_at: string
   readonly updated_at: string
 }
@@ -48,6 +52,9 @@ const fromRow = (row: BotRow): Bot =>
     approvalMode: isApprovalMode(row.approval_mode) ? row.approval_mode : "ask",
     maxSteps: row.max_steps,
     integrationIds: decodeStringArray(row.integration_ids),
+    teammateIds: decodeStringArray(row.teammate_ids),
+    librarySkills: decodeStringArray(row.library_skills),
+    memoryProject: row.memory_project,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   })
@@ -59,8 +66,16 @@ export class BotRepo extends Context.Service<BotRepo, {
   get(id: string): Effect.Effect<Bot, BotNotFound>
   create(input: BotCreate): Effect.Effect<Bot>
   update(id: string, input: BotUpdate): Effect.Effect<Bot, BotNotFound>
-  /** Deletes the bot with its one-on-one chats. Group chats keep its past messages and the other bots. */
+  /**
+   * Deletes the bot with its one-on-one chats and its handoffs, and takes it off other bots' teammates.
+   * Group chats keep its past messages and the other bots.
+   */
   remove(id: string): Effect.Effect<void, BotNotFound>
+  /**
+   * Gives library skill `name` to exactly `botIds` (unknown ids are skipped), or with `only: false`
+   * adds it to them and leaves other bots as they are. Returns whether any bot changed.
+   */
+  assignLibrarySkill(name: string, botIds: ReadonlyArray<string>, options?: { readonly only?: boolean }): Effect.Effect<boolean>
 }>()("weaver/BotRepo") {
   static readonly layer = Layer.effect(
     BotRepo,
@@ -93,10 +108,13 @@ export class BotRepo extends Context.Service<BotRepo, {
             mascot_id: input.mascotId ?? "",
             color_hex: input.colorHex ?? "#EC5BA8",
             symbol: input.symbol ?? "sparkle",
-            tools: JSON.stringify(input.tools ?? ["shell", "files", "browser", "memory", "skills"]),
+            tools: JSON.stringify(input.tools ?? defaultTools),
             approval_mode: input.approvalMode ?? "ask",
             max_steps: clampSteps(input.maxSteps ?? defaultMaxSteps),
             integration_ids: JSON.stringify(input.integrationIds ?? []),
+            teammate_ids: JSON.stringify([...new Set(input.teammateIds ?? [])]),
+            library_skills: JSON.stringify([...new Set(input.librarySkills ?? [])]),
+            memory_project: input.memoryProject?.trim() ?? "",
             created_at: now,
             updated_at: now
           })
@@ -119,6 +137,9 @@ export class BotRepo extends Context.Service<BotRepo, {
         if (input.approvalMode !== undefined) changes.approval_mode = input.approvalMode
         if (input.maxSteps !== undefined) changes.max_steps = clampSteps(input.maxSteps)
         if (input.integrationIds !== undefined) changes.integration_ids = JSON.stringify(input.integrationIds)
+        if (input.teammateIds !== undefined) changes.teammate_ids = JSON.stringify([...new Set(input.teammateIds)])
+        if (input.librarySkills !== undefined) changes.library_skills = JSON.stringify([...new Set(input.librarySkills)])
+        if (input.memoryProject !== undefined) changes.memory_project = input.memoryProject.trim()
         yield* sql`UPDATE bots SET ${sql.update(changes)} WHERE id = ${id}`.pipe(Effect.orDie)
         if (input.name !== undefined) {
           yield* sql`UPDATE messages SET sender_name = ${input.name.trim()} WHERE bot_id = ${id}`.pipe(Effect.orDie)
@@ -130,6 +151,15 @@ export class BotRepo extends Context.Service<BotRepo, {
         yield* get(id)
         yield* sql.withTransaction(Effect.gen(function*() {
           yield* sql`
+            DELETE FROM conversations WHERE kind = 'handoff' AND (requester_bot_id = ${id} OR id IN (
+              SELECT conversation_id FROM conversation_bots WHERE bot_id = ${id}
+            ))`
+          yield* sql`
+            UPDATE bots SET teammate_ids = (
+              SELECT json_group_array(value) FROM json_each(bots.teammate_ids) WHERE value != ${id}
+            )
+            WHERE json_valid(teammate_ids) AND EXISTS (SELECT 1 FROM json_each(bots.teammate_ids) WHERE value = ${id})`
+          yield* sql`
             DELETE FROM conversations WHERE id IN (
               SELECT conversation_id FROM conversation_bots
               GROUP BY conversation_id
@@ -140,7 +170,28 @@ export class BotRepo extends Context.Service<BotRepo, {
         })).pipe(Effect.orDie)
       })
 
-      return BotRepo.of({ list, get, create, update, remove })
+      const assignLibrarySkill = Effect.fn("BotRepo.assignLibrarySkill")(function*(
+        name: string,
+        botIds: ReadonlyArray<string>,
+        options?: { readonly only?: boolean }
+      ) {
+        const wanted = new Set(botIds)
+        const now = yield* nowIso
+        return yield* sql.withTransaction(Effect.gen(function*() {
+          let changed = false
+          for (const bot of yield* list) {
+            const has = bot.librarySkills.includes(name)
+            const should = wanted.has(bot.id) || (options?.only === false && has)
+            if (has === should) continue
+            const skills = should ? [...bot.librarySkills, name] : bot.librarySkills.filter((skill) => skill !== name)
+            yield* sql`UPDATE bots SET ${sql.update({ library_skills: JSON.stringify(skills), updated_at: now })} WHERE id = ${bot.id}`
+            changed = true
+          }
+          return changed
+        })).pipe(Effect.orDie)
+      })
+
+      return BotRepo.of({ list, get, create, update, remove, assignLibrarySkill })
     })
   )
 }

@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Effect, Predicate, Schema } from "effect"
 
 export class ToolFailure extends Schema.TaggedError<ToolFailure>()("ToolFailure", {
   message: Schema.String
@@ -27,9 +27,15 @@ export const runTool = (tool: AgentTool, params: unknown): Effect.Effect<string,
     )
   )
 
+/** Models send null for optional fields they don't use; those are left out instead. */
+export const withoutNulls = (params: unknown): unknown =>
+  Predicate.isObject(params) && !Array.isArray(params)
+    ? Object.fromEntries(Object.entries(params).filter(([, value]) => value !== null))
+    : params
+
 /** Decodes the model's arguments with a schema, turning mistakes into a failure the model can correct. */
 export const decodeParams = <S extends Schema.Top & { readonly DecodingServices: never }>(schema: S, params: unknown) =>
-  Schema.decodeUnknownEffect(schema)(params ?? {}).pipe(
+  Schema.decodeUnknownEffect(schema)(withoutNulls(params ?? {})).pipe(
     Effect.mapError((error) => new ToolFailure({ message: `Invalid arguments: ${error.message}` }))
   )
 
@@ -37,6 +43,8 @@ export const decodeParams = <S extends Schema.Top & { readonly DecodingServices:
 export const jsonSchemaOf = (schema: Schema.Top): Record<string, unknown> => {
   const document = Schema.toJsonSchemaDocument(schema)
   const { $schema: _, ...rest } = document.schema as Record<string, unknown>
+  // An empty Struct comes out as `{ not: { type: "null" } }`, and providers only take object schemas.
+  if (rest.type === undefined && Object.keys(rest).length === 1 && "not" in rest) return { type: "object", properties: {} }
   return Object.keys(document.definitions).length > 0 ? { ...rest, $defs: document.definitions } : rest
 }
 

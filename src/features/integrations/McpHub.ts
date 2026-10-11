@@ -3,7 +3,8 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
-import { Context, Duration, Effect, Layer, RcMap, Schema } from "effect"
+import { ErrorCode, McpError as ProtocolError } from "@modelcontextprotocol/sdk/types.js"
+import { Context, Duration, Effect, Layer, RcMap, Schema, type Scope } from "effect"
 import { version } from "../../config/Config.ts"
 import { childEnv } from "../../platform/lib/util.ts"
 import { IntegrationTestResult, IntegrationTool } from "./Integration.ts"
@@ -40,9 +41,26 @@ export class McpError extends Schema.TaggedError<McpError>()("McpError", {
 interface Connection {
   readonly client: Client
   tools: ReadonlyArray<McpTool> | undefined
+  /** The transport closed, e.g. the server process exited. */
+  closed: boolean
 }
 
 const errorMessage = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause))
+
+/** How long a server that let a call time out gets to answer a ping before it's restarted. */
+const pingTimeout = Duration.seconds(5)
+
+/**
+ * Whether a failed request means the connection is broken. A JSON-RPC error answers just that one
+ * request, so the connection stays; anything else (closed pipes, network errors) needs a reconnect.
+ */
+const isConnectionFailure = (cause: unknown): boolean =>
+  !(cause instanceof ProtocolError) || cause.code === ErrorCode.ConnectionClosed
+
+const isTimeout = (cause: unknown): boolean => cause instanceof ProtocolError && cause.code === ErrorCode.RequestTimeout
+
+/** Closing a stdio client ends the server process, escalating to SIGKILL if it doesn't exit. */
+const closeClient = (client: Client) => Effect.promise(() => client.close().catch(() => undefined))
 
 const makeTransport = (config: McpServerConfig, legacySse: boolean): Transport => {
   if (config.transport === "stdio") {
@@ -61,31 +79,31 @@ const makeTransport = (config: McpServerConfig, legacySse: boolean): Transport =
     : new StreamableHTTPClientTransport(url, { requestInit }) as Transport
 }
 
+/** Connects once; a client that doesn't finish connecting, including on timeout, is closed again. */
+const open = (config: McpServerConfig, legacySse: boolean): Effect.Effect<Client, unknown> =>
+  Effect.suspend(() => {
+    const client = new Client({ name: "weaver", version })
+    return Effect.tryPromise({
+      try: (signal) => client.connect(makeTransport(config, legacySse), { signal }),
+      catch: (cause) => cause
+    }).pipe(
+      Effect.onError(() => closeClient(client)),
+      Effect.as(client)
+    )
+  })
+
 const connect = (config: McpServerConfig): Effect.Effect<Client, McpError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const open = async (legacySse: boolean) => {
-        const client = new Client({ name: "weaver", version })
-        await client.connect(makeTransport(config, legacySse))
-        return client
-      }
-      try {
-        return await open(false)
-      } catch (error) {
-        // Older HTTP servers only speak the SSE transport.
-        if (config.transport === "http") return await open(true)
-        throw error
-      }
-    },
-    catch: (cause) => new McpError({ server: config.name, message: `Couldn't connect: ${errorMessage(cause)}` })
-  }).pipe(
+  open(config, false).pipe(
+    // Older HTTP servers only speak the SSE transport.
+    Effect.catch((error) => config.transport === "http" ? open(config, true) : Effect.fail(error)),
+    Effect.mapError((cause) => new McpError({ server: config.name, message: `Couldn't connect: ${errorMessage(cause)}` })),
     Effect.timeoutOrElse({
       duration: Duration.seconds(90),
       orElse: () => Effect.fail(new McpError({ server: config.name, message: "Timed out connecting." }))
     })
   )
 
-const listTools = (config: McpServerConfig, client: Client): Effect.Effect<ReadonlyArray<McpTool>, McpError> =>
+const listTools = (client: Client): Effect.Effect<ReadonlyArray<McpTool>, unknown> =>
   Effect.tryPromise({
     try: async () => {
       const tools: Array<McpTool> = []
@@ -103,7 +121,7 @@ const listTools = (config: McpServerConfig, client: Client): Effect.Effect<Reado
       } while (cursor !== undefined)
       return tools
     },
-    catch: (cause) => new McpError({ server: config.name, message: `Couldn't list tools: ${errorMessage(cause)}` })
+    catch: (cause) => cause
   })
 
 /** Flattens MCP content blocks into text a model can read. */
@@ -146,7 +164,10 @@ export class McpHub extends Context.Service<McpHub, {
     McpHub,
     Effect.gen(function*() {
       const configs = new Map<string, McpServerConfig>()
+      /** The live connection for each key, so dropping a stale one never drops its replacement. */
+      const current = new Map<string, Connection>()
 
+      // Concurrent calls for a key share one connect, and the layer's shutdown closes every connection.
       const connections = yield* RcMap.make({
         lookup: (key: string) =>
           Effect.acquireRelease(
@@ -155,35 +176,96 @@ export class McpHub extends Context.Service<McpHub, {
               if (config === undefined) {
                 return Effect.fail(new McpError({ server: key, message: "Unknown integration." }))
               }
-              return Effect.map(connect(config), (client): Connection => ({ client, tools: undefined }))
+              return Effect.map(connect(config), (client): Connection => {
+                const connection: Connection = { client, tools: undefined, closed: false }
+                client.onclose = () => {
+                  connection.closed = true
+                }
+                current.set(key, connection)
+                return connection
+              })
             }),
-            (connection) => Effect.promise(() => connection.client.close().catch(() => undefined))
+            (connection) =>
+              Effect.andThen(
+                Effect.sync(() => {
+                  if (current.get(key) === connection) current.delete(key)
+                }),
+                closeClient(connection.client)
+              )
           ),
         idleTimeToLive: Duration.minutes(10)
       })
 
+      /** Forgets a broken connection so the next call reconnects, closing it even if other calls still hold it. */
+      const drop = (key: string, connection: Connection) =>
+        Effect.suspend(() => {
+          connection.closed = true
+          if (current.get(key) !== connection) return closeClient(connection.client)
+          current.delete(key)
+          return Effect.andThen(RcMap.invalidate(connections, key), closeClient(connection.client))
+        })
+
+      const acquire = (config: McpServerConfig, retried = false): Effect.Effect<Connection, McpError, Scope.Scope> =>
+        RcMap.get(connections, config.key).pipe(
+          // A failed connect isn't kept, so the next call tries again.
+          Effect.tapError(() => RcMap.invalidate(connections, config.key)),
+          Effect.flatMap((connection) =>
+            connection.closed && !retried
+              ? Effect.andThen(drop(config.key, connection), acquire(config, true))
+              : Effect.succeed(connection)
+          )
+        )
+
+      /** A timed-out call only restarts the server when it doesn't answer a ping either. */
+      const afterFailure = (config: McpServerConfig, connection: Connection, cause: unknown): Effect.Effect<void> => {
+        if (isTimeout(cause)) {
+          return Effect.tryPromise(() => connection.client.ping({ timeout: Duration.toMillis(pingTimeout) })).pipe(
+            Effect.asVoid,
+            Effect.catch(() =>
+              Effect.andThen(
+                Effect.logWarning(`${config.name} stopped responding, so it's restarted on the next call`),
+                drop(config.key, connection)
+              )
+            )
+          )
+        }
+        return isConnectionFailure(cause) ? drop(config.key, connection) : Effect.void
+      }
+
       const withConnection = <A>(
         config: McpServerConfig,
-        use: (connection: Connection) => Effect.Effect<A, McpError>
+        use: (connection: Connection) => Effect.Effect<A, unknown>,
+        describe: (cause: unknown) => string
       ): Effect.Effect<A, McpError> =>
         Effect.suspend(() => {
           configs.set(config.key, config)
-          return RcMap.get(connections, config.key).pipe(
-            Effect.flatMap(use),
-            Effect.scoped,
-            // A broken connection is dropped so the next call reconnects.
-            Effect.tapError(() => RcMap.invalidate(connections, config.key))
+          return acquire(config).pipe(
+            Effect.flatMap((connection) =>
+              use(connection).pipe(
+                Effect.catch((cause) =>
+                  Effect.andThen(
+                    afterFailure(config, connection, cause),
+                    Effect.fail(new McpError({ server: config.name, message: describe(cause) }))
+                  )
+                )
+              )
+            ),
+            Effect.scoped
           )
         })
 
       const tools = (config: McpServerConfig) =>
-        withConnection(config, (connection) =>
-          connection.tools !== undefined
-            ? Effect.succeed(connection.tools)
-            : Effect.tap(listTools(config, connection.client), (listed) =>
-              Effect.sync(() => {
-                connection.tools = listed
-              })))
+        withConnection(
+          config,
+          (connection) =>
+            connection.tools !== undefined
+              ? Effect.succeed(connection.tools)
+              : Effect.tap(listTools(connection.client), (listed) =>
+                Effect.sync(() => {
+                  connection.tools = listed
+                })),
+          (cause) => `Couldn't list tools: ${errorMessage(cause)}`
+        )
 
       const call = (
         config: McpServerConfig,
@@ -191,26 +273,37 @@ export class McpHub extends Context.Service<McpHub, {
         args: Record<string, unknown>,
         timeout: Duration.Duration = Duration.minutes(2)
       ) =>
-        withConnection(config, (connection) =>
-          Effect.tryPromise({
-            try: (signal) =>
-              connection.client.callTool({ name, arguments: args }, undefined, {
-                signal,
-                timeout: Duration.toMillis(timeout)
-              }),
-            catch: (cause) => new McpError({ server: config.name, message: errorMessage(cause) })
-          }).pipe(
-            Effect.map((result) => ({
-              text: contentToText(result as { content?: unknown; structuredContent?: unknown }),
-              isError: result.isError === true
-            }))
-          ))
+        withConnection(
+          config,
+          (connection) =>
+            Effect.tryPromise({
+              try: (signal) =>
+                connection.client.callTool({ name, arguments: args }, undefined, {
+                  signal,
+                  timeout: Duration.toMillis(timeout)
+                }),
+              catch: (cause) => cause
+            }).pipe(
+              Effect.map((result) => ({
+                text: contentToText(result as { content?: unknown; structuredContent?: unknown }),
+                isError: result.isError === true
+              }))
+            ),
+          (cause) =>
+            isTimeout(cause)
+              ? `${name} didn't finish within ${Math.round(Duration.toMillis(timeout) / 1000)} seconds.`
+              : errorMessage(cause)
+        )
 
       const test = (config: McpServerConfig) =>
         Effect.acquireUseRelease(
           connect(config),
-          (client) => listTools(config, client),
-          (client) => Effect.promise(() => client.close().catch(() => undefined))
+          (client) =>
+            Effect.mapError(
+              listTools(client),
+              (cause) => new McpError({ server: config.name, message: `Couldn't list tools: ${errorMessage(cause)}` })
+            ),
+          closeClient
         ).pipe(
           Effect.map((listed) =>
             new IntegrationTestResult({
@@ -226,7 +319,11 @@ export class McpHub extends Context.Service<McpHub, {
         tools,
         call,
         test,
-        invalidate: (key) => RcMap.invalidate(connections, key)
+        invalidate: (key) =>
+          Effect.andThen(
+            Effect.sync(() => current.delete(key)),
+            RcMap.invalidate(connections, key)
+          )
       })
     })
   )

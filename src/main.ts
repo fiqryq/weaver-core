@@ -7,8 +7,12 @@ import { BotRepo } from "./features/bots/BotRepo.ts"
 import { ConversationRepo } from "./features/conversations/ConversationRepo.ts"
 import { IntegrationRepo } from "./features/integrations/IntegrationRepo.ts"
 import { McpHub } from "./features/integrations/McpHub.ts"
+import { CoreMemory } from "./features/learning/memory/CoreMemory.ts"
+import { LibraryStore } from "./features/learning/library/LibraryStore.ts"
+import { SkillSources } from "./features/learning/library/SkillSources.ts"
 import { SelfReview } from "./features/learning/review/SelfReview.ts"
 import { SkillStore } from "./features/learning/skills/SkillStore.ts"
+import { KnowledgeBase } from "./features/memory/KnowledgeBase.ts"
 import { Settings } from "./features/profile/Settings.ts"
 import { LanguageModelFactory, ProviderRegistry } from "./features/providers/ProviderRegistry.ts"
 import { AgentRunnerLive } from "./features/runs/AgentRunnerLive.ts"
@@ -16,25 +20,36 @@ import { Approvals } from "./features/runs/Approvals.ts"
 import { RunEvents } from "./features/runs/RunEvents.ts"
 import { EventsRoutes } from "./features/runs/sse.ts"
 import { Toolbox } from "./features/runs/Toolbox.ts"
+import { TeamRepo } from "./features/teams/TeamRepo.ts"
+import { TeamSessions } from "./features/teams/TeamSessions.ts"
 import { DatabaseLive } from "./platform/db/Database.ts"
+import { BotUsers } from "./platform/os/BotUsers.ts"
 import { Api } from "./platform/http/Api.ts"
 import { ApiHandlers, AuthorizationLive } from "./platform/http/handlers.ts"
+import { Camofox } from "./tools/builtin/Camofox.ts"
 
 /** Everything the API needs, given a migrated database, config, a model factory and platform services. */
-export const AppServices = AgentRunnerLive.pipe(
+export const AppServices = TeamSessions.layer.pipe(
+  Layer.provideMerge(AgentRunnerLive),
   Layer.provideMerge(SelfReview.layer),
   Layer.provideMerge(Toolbox.layer),
+  Layer.provideMerge(KnowledgeBase.layer),
+  Layer.provideMerge(CoreMemory.layer),
+  Layer.provideMerge(Layer.mergeAll(LibraryStore.layer, SkillSources.layer)),
   Layer.provideMerge(SkillStore.layer),
-  Layer.provideMerge(Layer.mergeAll(McpHub.layer, RunEvents.layer, Approvals.layer)),
+  Layer.provideMerge(Layer.mergeAll(McpHub.layer, RunEvents.layer, Approvals.layer, BotUsers.layer, Camofox.layer)),
   Layer.provideMerge(ProviderRegistry.layer),
-  Layer.provideMerge(Layer.mergeAll(BotRepo.layer, ConversationRepo.layer, IntegrationRepo.layer, Settings.layer))
+  Layer.provideMerge(Layer.mergeAll(BotRepo.layer, ConversationRepo.layer, IntegrationRepo.layer, Settings.layer, TeamRepo.layer))
 )
 
 const Startup = Layer.effectDiscard(Effect.gen(function*() {
   const conversations = yield* ConversationRepo
+  const teams = yield* TeamRepo
   const config = yield* AppConfig
   const interrupted = yield* conversations.markInterrupted
   if (interrupted > 0) yield* Effect.logWarning(`Marked ${interrupted} unfinished replies as failed after a restart.`)
+  const sessions = yield* teams.markInterrupted
+  if (sessions > 0) yield* Effect.logWarning(`Marked ${sessions} team sessions as interrupted after a restart.`)
   yield* Effect.logInfo(`Weaver agent server ${version} listening on ${config.host}:${config.port}`)
 }))
 

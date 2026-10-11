@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# Gives each Weaver bot its own Linux user. The agent server runs it as root through sudo:
+#
+#   weaver-bot-user ensure <bot id>   create the bot's user (if needed) and fix its folders; prints the user name
+#   weaver-bot-user remove <bot id>   stop the user's processes, delete the user and its home (the workspace stays)
+#
+# The user is wb-<first 12 characters of the id, lowercased, without dashes>, a system user whose own group
+# is its primary group, with the weaver-bots group on top. Its home is /var/lib/weaver/bots/<id>/home (0700),
+# and it owns /var/lib/weaver/bots/<id>/workspace (group weaver-work, mode 2770), which the server reaches
+# through the weaver-work group. The bot user isn't in weaver-work, so the workspace also gets POSIX ACLs
+# (default ones too): the bot user and weaver-work get rw on everything either side creates in it, the
+# shared weaver-bot user and everyone else get nothing. Needs setfacl (the acl package); without it the
+# ACLs are skipped with a warning. On remove, whatever is left of the workspace goes back to the server's
+# user and loses the bot user's ACL entries, so a later user that gets the same uid can't open it.
+# Installed by weaver-vps-setup.sh as /usr/local/lib/weaver/weaver-bot-user.
+set -euo pipefail
+umask 077
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+BOTS_DIR=/var/lib/weaver/bots
+SERVICE_USER=weaver
+SHARED_USER=weaver-bot
+WORK_GROUP=weaver-work
+BOTS_GROUP=weaver-bots
+LOCK_FILE=/run/lock/weaver-bot-user.lock
+
+die() { echo "weaver-bot-user: $*" >&2; exit 1; }
+usage() { echo "Usage: weaver-bot-user ensure|remove <bot id>" >&2; exit 2; }
+
+[ "$(id -u)" -eq 0 ] || die "run this as root"
+[ "$#" -eq 2 ] || usage
+ACTION="$1"
+BOT_ID="$2"
+case "$ACTION" in ensure | remove) ;; *) usage ;; esac
+[[ "$BOT_ID" =~ ^[A-Za-z0-9-]{1,64}$ ]] || die "invalid bot id (use 1-64 letters, digits or dashes)"
+NAME_PART="${BOT_ID,,}"
+NAME_PART="${NAME_PART//-/}"
+NAME_PART="${NAME_PART:0:12}"
+[ -n "$NAME_PART" ] || die "invalid bot id (it needs at least one letter or digit)"
+BOT_USER="wb-$NAME_PART"
+BOT_DIR="$BOTS_DIR/$BOT_ID"
+BOT_HOME="$BOT_DIR/home"
+
+for group in "$WORK_GROUP" "$BOTS_GROUP"; do
+  getent group "$group" >/dev/null || die "the $group group is missing; rerun weaver-vps-setup.sh"
+done
+id "$SERVICE_USER" >/dev/null 2>&1 || die "the $SERVICE_USER user is missing; rerun weaver-vps-setup.sh"
+
+# One change at a time, so two calls for the same bot can't both try to create its user.
+exec 9>"$LOCK_FILE"
+flock -w 60 9 || die "another weaver-bot-user is still running"
+
+# Enters a directory without following symlinks: it has to be a real directory, and once we're inside
+# it has to be the expected path. Later changes act on "." (the directory we hold), so a symlink or
+# rename swapped in afterwards can't redirect them anywhere else.
+enter() {
+  local name="$1" expected="$2"
+  [ -d "$name" ] && [ ! -L "$name" ] || die "$expected isn't a plain directory"
+  cd -P -- "$name" || die "can't open $expected"
+  [ "$(pwd -P)" = "$expected" ] || die "$expected resolves somewhere else"
+}
+
+enter_bots_dir() {
+  cd /
+  enter "${BOTS_DIR#/}" "$BOTS_DIR"
+}
+
+# The user's home, if the user exists.
+home_of() { getent passwd "$1" | cut -d: -f6; }
+
+ensure() {
+  enter_bots_dir
+  if [ ! -e "$BOT_ID" ] && [ ! -L "$BOT_ID" ]; then
+    mkdir -m 711 -- "$BOT_ID"
+  fi
+  enter "$BOT_ID" "$BOT_DIR"
+  chown -h "$SERVICE_USER:$SERVICE_USER" .
+  chmod 711 .
+  for entry in home workspace; do
+    if [ -L "$entry" ] || { [ -e "$entry" ] && [ ! -d "$entry" ]; }; then
+      die "$BOT_DIR/$entry isn't a plain directory"
+    fi
+  done
+
+  if id "$BOT_USER" >/dev/null 2>&1; then
+    [ "$(home_of "$BOT_USER")" = "$BOT_HOME" ] \
+      || die "user $BOT_USER already exists and doesn't belong to bot $BOT_ID"
+  else
+    useradd --system --user-group --no-create-home --home-dir "$BOT_HOME" \
+      --shell /bin/bash --groups "$BOTS_GROUP" --comment "Weaver bot $BOT_ID" "$BOT_USER" >/dev/null
+  fi
+  # Membership is fixed on every call, in case someone edited the user by hand.
+  usermod -G "$BOTS_GROUP" "$BOT_USER"
+
+  [ -e home ] || [ -L home ] || mkdir -m 700 home
+  (
+    enter home "$BOT_HOME"
+    chown -h "$BOT_USER:$BOT_USER" .
+    chmod 700 .
+  )
+
+  [ -e workspace ] || [ -L workspace ] || mkdir -m 2770 workspace
+  (
+    enter workspace "$BOT_DIR/workspace"
+    share_all=""
+    if [ "$(stat -c %U .)" != "$BOT_USER" ]; then
+      # First call for this bot (or a workspace from the shared weaver-bot user): hand everything in it over.
+      chown -R -h -P "$BOT_USER:$WORK_GROUP" .
+      chmod -R g+rwX,o-rwx .
+      find . -type d -exec chmod g+s {} +
+      share_all=1
+    fi
+    chown -h "$BOT_USER:$WORK_GROUP" .
+    chmod 2770 .
+    share_workspace "$share_all"
+  )
+  printf '%s\n' "$BOT_USER"
+}
+
+# Sets the workspace's ACLs (we're inside it). The server writes files here as $SERVICE_USER, so without
+# them the bot user, which isn't in $WORK_GROUP, couldn't open those. The default entries are inherited
+# by everything created later, by either side. Everything inside is only walked on the first handover or
+# when the workspace doesn't have the bot user's entries yet (made before this helper set ACLs).
+share_workspace() {
+  local share_all="$1" current acl deny=""
+  if ! command -v setfacl >/dev/null 2>&1; then
+    echo "weaver-bot-user: setfacl is missing (install the acl package), so $BOT_USER can't open files the server writes" >&2
+    return 0
+  fi
+  if [ -z "$share_all" ]; then
+    current="$(getfacl -cE . 2>/dev/null)" || current=""
+    grep -qx "user:$BOT_USER:rwx" <<<"$current" && grep -qx "default:user:$BOT_USER:rwx" <<<"$current" || share_all=1
+  fi
+  # The shared bot user is in $WORK_GROUP; a named entry for it overrides the group's.
+  id "$SHARED_USER" >/dev/null 2>&1 && deny="u:$SHARED_USER:---,d:u:$SHARED_USER:---"
+  # The access mask is left for setfacl to work out, so plain files don't turn executable.
+  acl="u:$BOT_USER:rwX,g:$WORK_GROUP:rwX,o::---,d:u::rwx,d:u:$BOT_USER:rwx,d:g::rwx,d:g:$WORK_GROUP:rwx,d:m::rwx,d:o::---"
+  if [ -n "$share_all" ]; then
+    # Nothing else may rename things in here while setfacl walks it by path: the bot user's processes are
+    # stopped (the server only starts new ones once this returns), and the shared user is shut out first.
+    [ -z "$deny" ] || setfacl -m "$deny" .
+    pkill -KILL -u "$BOT_USER" >/dev/null 2>&1 || true
+    find . -mindepth 1 -maxdepth 1 -exec setfacl -R -P -m "$acl${deny:+,$deny}" {} +
+  fi
+  # The top folder goes last, so a walk that was cut short is noticed and done again next time.
+  setfacl -m "$acl${deny:+,$deny}" .
+}
+
+# Hands what's left of the workspace back to the server's user and drops the bot user's ACL entries,
+# so nobody who later gets the same uid can open it. Runs before the user is deleted (chown needs its name).
+release_workspace() {
+  enter_bots_dir
+  [ -d "$BOT_ID" ] && [ ! -L "$BOT_ID" ] || return 0
+  enter "$BOT_ID" "$BOT_DIR"
+  [ -d workspace ] && [ ! -L workspace ] || return 0
+  enter workspace "$BOT_DIR/workspace"
+  chown -R -h -P --from="$BOT_USER" "$SERVICE_USER" . || true
+  if command -v setfacl >/dev/null 2>&1; then
+    setfacl -R -P -x "u:$BOT_USER,d:u:$BOT_USER" . 2>/dev/null || true
+  fi
+}
+
+remove() {
+  if id "$BOT_USER" >/dev/null 2>&1; then
+    [ "$(home_of "$BOT_USER")" = "$BOT_HOME" ] \
+      || die "user $BOT_USER doesn't belong to bot $BOT_ID; leaving it alone"
+    pkill -KILL -u "$BOT_USER" >/dev/null 2>&1 || true
+    ( release_workspace ) || true
+    for _ in 1 2 3 4 5; do
+      pkill -KILL -u "$BOT_USER" >/dev/null 2>&1 || true
+      userdel "$BOT_USER" >/dev/null 2>&1 && break
+      sleep 1
+    done
+    ! id "$BOT_USER" >/dev/null 2>&1 || die "couldn't delete user $BOT_USER"
+  fi
+  enter_bots_dir
+  [ -e "$BOT_ID" ] || [ -L "$BOT_ID" ] || return 0
+  enter "$BOT_ID" "$BOT_DIR"
+  rm -rf -- home
+}
+
+"$ACTION"

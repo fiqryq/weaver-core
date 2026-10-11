@@ -29,7 +29,7 @@ export class ConversationsApi extends HttpApiGroup.make("conversations")
     HttpApiEndpoint.delete("remove", "/:id", {
       params: IdParams,
       success: HttpApiSchema.NoContent,
-      error: ConversationNotFound
+      error: [ConversationNotFound, Conflict]
     }),
     HttpApiEndpoint.get("messages", "/:id/messages", {
       params: IdParams,
@@ -51,7 +51,7 @@ export class ConversationsApi extends HttpApiGroup.make("conversations")
       params: IdParams,
       payload: SendMessage,
       success: SendResult,
-      error: [ConversationNotFound, BadRequest]
+      error: [ConversationNotFound, BadRequest, Conflict]
     }),
     HttpApiEndpoint.post("regenerate", "/:id/regenerate", {
       params: IdParams,

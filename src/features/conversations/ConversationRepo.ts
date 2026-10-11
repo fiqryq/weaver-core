@@ -3,6 +3,7 @@ import { SqlClient } from "effect/sql"
 import { newId, nowIso } from "../../platform/lib/util.ts"
 import {
   Conversation,
+  ConversationKind,
   ConversationNotFound,
   Message,
   MessagePart,
@@ -14,6 +15,9 @@ import {
 interface ConversationRow {
   readonly id: string
   readonly title: string
+  readonly kind: string
+  readonly requester_bot_id: string | null
+  readonly team_id: string | null
   readonly created_at: string
   readonly updated_at: string
 }
@@ -41,6 +45,7 @@ interface MessageRow {
 const PartsJson = Schema.fromJsonString(Schema.Array(MessagePart))
 const decodeParts = Schema.decodeUnknownSync(PartsJson)
 const isStatus = Schema.is(MessageStatusSchema)
+const isKind = Schema.is(ConversationKind)
 
 const messageFromRow = (row: MessageRow): Message =>
   new Message({
@@ -92,10 +97,21 @@ export interface MessagePatch {
   readonly completionTokens?: number
 }
 
+export interface NewConversation {
+  readonly title: string
+  readonly botIds: ReadonlyArray<string>
+  /** A team's room or private chat; a chat otherwise. */
+  readonly team?: { readonly id: string; readonly kind: "team-room" | "team-private" }
+}
+
 export class ConversationRepo extends Context.Service<ConversationRepo, {
   readonly list: Effect.Effect<ReadonlyArray<Conversation>>
   get(id: string): Effect.Effect<Conversation, ConversationNotFound>
-  create(input: { title: string; botIds: ReadonlyArray<string> }): Effect.Effect<Conversation>
+  create(input: NewConversation): Effect.Effect<Conversation>
+  /** The conversation `requesterId` asks `targetId` for help in, made on first use. */
+  handoff(requesterId: string, targetId: string, title: string): Effect.Effect<Conversation>
+  /** Handoffs the bot asked or answered in. */
+  handoffsOf(botId: string): Effect.Effect<ReadonlyArray<Conversation>>
   update(id: string, input: { title?: string | undefined; botIds?: ReadonlyArray<string> | undefined }): Effect.Effect<
     Conversation,
     ConversationNotFound
@@ -126,6 +142,9 @@ export class ConversationRepo extends Context.Service<ConversationRepo, {
             id: row.id,
             title: row.title,
             botIds,
+            kind: isKind(row.kind) ? row.kind : "chat",
+            requesterBotId: row.requester_bot_id,
+            teamId: row.team_id,
             createdAt: row.created_at,
             updatedAt: row.updated_at
           }))
@@ -153,20 +172,51 @@ export class ConversationRepo extends Context.Service<ConversationRepo, {
           }
         })
 
-      const create = Effect.fn("ConversationRepo.create")(function*(input: {
-        title: string
-        botIds: ReadonlyArray<string>
-      }) {
-        const id = newId()
-        const now = yield* nowIso
-        yield* sql.withTransaction(Effect.gen(function*() {
-          yield* sql`INSERT INTO conversations ${
-            sql.insert({ id, title: input.title, created_at: now, updated_at: now })
-          }`
-          yield* setBots(id, input.botIds)
-        })).pipe(Effect.orDie)
-        return yield* Effect.orDie(get(id))
+      const insert = (input: NewConversation & { requesterBotId?: string }) =>
+        Effect.gen(function*() {
+          const id = newId()
+          const now = yield* nowIso
+          yield* sql.withTransaction(Effect.gen(function*() {
+            yield* sql`INSERT INTO conversations ${
+              sql.insert({
+                id,
+                title: input.title,
+                kind: input.team?.kind ?? (input.requesterBotId === undefined ? "chat" : "handoff"),
+                requester_bot_id: input.requesterBotId ?? null,
+                team_id: input.team?.id ?? null,
+                created_at: now,
+                updated_at: now
+              })
+            }`
+            yield* setBots(id, input.botIds)
+          })).pipe(Effect.orDie)
+          return yield* Effect.orDie(get(id))
+        })
+
+      const create = Effect.fn("ConversationRepo.create")(function*(input: NewConversation) {
+        return yield* insert(input)
       })
+
+      const handoff = Effect.fn("ConversationRepo.handoff")(function*(requesterId: string, targetId: string, title: string) {
+        const rows = yield* sql<ConversationRow>`
+          SELECT * FROM conversations
+          WHERE kind = 'handoff' AND requester_bot_id = ${requesterId} AND id IN (
+            SELECT conversation_id FROM conversation_bots WHERE bot_id = ${targetId}
+          )
+          ORDER BY created_at LIMIT 1`.pipe(Effect.orDie)
+        if (rows[0] !== undefined) return yield* Effect.orDie(toConversation(rows[0]))
+        return yield* insert({ title, botIds: [requesterId, targetId], requesterBotId: requesterId })
+      })
+
+      const handoffsOf = (botId: string) =>
+        sql<ConversationRow>`
+          SELECT * FROM conversations
+          WHERE kind = 'handoff' AND (requester_bot_id = ${botId} OR id IN (
+            SELECT conversation_id FROM conversation_bots WHERE bot_id = ${botId}
+          ))`.pipe(
+          Effect.flatMap((rows) => Effect.forEach(rows, toConversation)),
+          Effect.orDie
+        )
 
       const update = Effect.fn("ConversationRepo.update")(function*(
         id: string,
@@ -270,6 +320,8 @@ export class ConversationRepo extends Context.Service<ConversationRepo, {
         list,
         get,
         create,
+        handoff,
+        handoffsOf,
         update,
         remove,
         messages,

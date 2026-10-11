@@ -16,6 +16,7 @@ coverage/
 .vite/
 .vitest/
 .eslintcache
+.playwright-mcp/
 
 # Logs
 *.log

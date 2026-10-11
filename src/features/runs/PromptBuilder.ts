@@ -1,8 +1,10 @@
 import { truncate } from "../../platform/lib/util.ts"
+import { askBotToolName, handoffPrompt, teammatesPrompt } from "../../tools/builtin/AskBot.ts"
 import { corePrompt, memoryInstructions } from "../../tools/builtin/Memory.ts"
 import { sessionSearchGuidance } from "../../tools/learning/SessionSearch.ts"
 import type { Bot } from "../bots/Bot.ts"
-import { type Message, type MessagePart, messageText } from "../conversations/Conversation.ts"
+import type { Message, MessagePart, ReportPart } from "../conversations/Conversation.ts"
+import { recallPrompt } from "../learning/memory/recall.ts"
 import type { SkillIndexEntry } from "../learning/skills/SkillStore.ts"
 import type { Profile } from "../profile/Profile.ts"
 import type { BotTools } from "./Toolbox.ts"
@@ -17,9 +19,13 @@ export interface PromptContext {
   readonly profile: Profile
   /** Names of the other bots in a group chat; empty for a one-on-one chat. */
   readonly otherBots: ReadonlyArray<string>
+  /** Bots it can ask with ask_bot, described when that tool is offered. */
+  readonly teammates?: ReadonlyArray<Bot>
+  /** In a handoff, the name of the teammate the bot is answering. */
+  readonly handoffFrom?: string | undefined
   readonly tools: Pick<
     BotTools,
-    "tools" | "workspace" | "memoryEnabled" | "coreMemory" | "skills" | "integrations" | "unavailable"
+    "tools" | "workspace" | "memoryEnabled" | "memoryProject" | "coreMemory" | "recall" | "skills" | "integrations" | "unavailable"
   >
   readonly display: string
   readonly now: Date
@@ -31,23 +37,31 @@ export const skillsGuidance = "When you work out a non-trivial workflow, record 
 /** Keeps skill text from closing or opening tags in the prompt, e.g. `</available_skills>`. */
 const escapeTags = (text: string): string => text.replace(/</g, "‹").replace(/>/g, "›")
 
+const sharedGroup = "Shared library"
+
 export const skillsPrompt = (skills: ReadonlyArray<SkillIndexEntry>, basicTools: string): string => {
   if (skills.length === 0) {
     return `## Skills\nYou can keep skills: your own reusable instructions for recurring tasks, loaded with skill_view and ` +
       `saved with skill_manage. You don't have any yet. ${skillsGuidance}`
   }
   const byCategory = new Map<string, Array<SkillIndexEntry>>()
-  for (const skill of skills) {
+  for (const skill of skills.filter((entry) => entry.library !== true)) {
     const category = skill.category || "general"
     byCategory.set(category, [...(byCategory.get(category) ?? []), skill])
+  }
+  const entry = (skill: SkillIndexEntry) => {
+    const name = escapeTags(skill.name)
+    return skill.description.length > 0 ? `    - ${name}: ${escapeTags(skill.description)}` : `    - ${name}`
   }
   const lines: Array<string> = []
   for (const category of [...byCategory.keys()].sort((a, b) => a.localeCompare(b))) {
     lines.push(`  ${escapeTags(category)}:`)
-    for (const skill of byCategory.get(category)!.sort((a, b) => a.name.localeCompare(b.name))) {
-      const name = escapeTags(skill.name)
-      lines.push(skill.description.length > 0 ? `    - ${name}: ${escapeTags(skill.description)}` : `    - ${name}`)
-    }
+    for (const skill of byCategory.get(category)!.sort((a, b) => a.name.localeCompare(b.name))) lines.push(entry(skill))
+  }
+  const shared = skills.filter((skill) => skill.library === true).sort((a, b) => a.name.localeCompare(b.name))
+  if (shared.length > 0) {
+    lines.push(`  ${sharedGroup}:`)
+    for (const skill of shared) lines.push(entry(skill))
   }
   return `${skillsGuidance}\n\n` +
     "## Skills\n" +
@@ -61,6 +75,9 @@ export const skillsPrompt = (skills: ReadonlyArray<SkillIndexEntry>, basicTools:
     "code review, planning, and testing — load them even for tasks you already know how to do, because " +
     "the skill defines how it should be done here.\n" +
     "If a skill has issues, fix it with skill_manage(action='patch').\n" +
+    (shared.length > 0
+      ? `Skills under "${sharedGroup}" are shared with other bots: a fix to one applies to all of them, and new skills you create stay your own.\n`
+      : "") +
     "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, " +
     "had wrong commands, or needed pitfalls you discovered, update it before finishing.\n" +
     "\n" +
@@ -86,7 +103,9 @@ export const systemPrompt = (context: PromptContext): string => {
   let system = bot.systemPrompt
   system += `\n\nYour name is ${bot.name}. The user is ${user}. Their timezone is ${timezone}. Now: ${formatNow(context.now, timezone)}.`
 
-  if (context.otherBots.length > 0) {
+  if (context.handoffFrom !== undefined) {
+    system += ` ${handoffPrompt(context.handoffFrom)}`
+  } else if (context.otherBots.length > 0) {
     system += ` This is a group chat with other bots: ${context.otherBots.join(", ")}. Their messages are prefixed with their name.`
   }
 
@@ -95,11 +114,19 @@ export const systemPrompt = (context: PromptContext): string => {
     const abilities: Array<string> = []
     if (toolNames.has("run_command")) abilities.push("run shell commands")
     if (toolNames.has("read_file")) abilities.push("read and write files")
-    if ([...toolNames].some((tool) => tool.startsWith("browser_"))) {
-      abilities.push(`browse the web in a real browser the user can watch on the desktop (DISPLAY=${context.display})`)
+    const web = toolNames.has("web_search")
+    const browser = [...toolNames].some((tool) => tool.startsWith("browser_"))
+    if (web) abilities.push("search the web and read pages (web_search, web_fetch)")
+    if (browser) {
+      abilities.push(
+        `use a real web browser for pages you need to interact with, like forms and logins; the user can watch it on the desktop (DISPLAY=${context.display})`
+      )
     }
     system += `\n\nYou work on your own Linux VPS and can call tools to act, not just talk.`
     if (abilities.length > 0) system += ` You can ${abilities.join(", ")}.`
+    if (web && browser) {
+      system += " Prefer web_search and web_fetch for looking things up; use the browser when you need to click, fill in forms or stay logged in."
+    }
     system += ` Your workspace is ${tools.workspace}; keep your files there.` +
       ` Use tools when they help, check results before reporting, and keep the user informed in plain language.` +
       ` Don't run destructive commands (deleting data, changing system settings) unless the user clearly asked for it.`
@@ -109,13 +136,17 @@ export const systemPrompt = (context: PromptContext): string => {
     const list = tools.integrations.map((integration) => `${integration.name} (tools starting with ${integration.prefix}__)`)
     system += `\n\nConnected apps you can use: ${list.join(", ")}.`
   }
+  if (toolNames.has(askBotToolName) && context.teammates !== undefined && context.teammates.length > 0) {
+    system += `\n\n${teammatesPrompt(context.teammates)}`
+  }
   if (tools.unavailable.length > 0) {
     system += `\n\nThese are set up but unreachable right now, so say so if the user asks for them: ${tools.unavailable.join("; ")}.`
   }
 
   if (tools.memoryEnabled) {
-    system += `\n\n${memoryInstructions(bot.name)}`
-    if (tools.coreMemory !== undefined) system += `\n\n${corePrompt(tools.coreMemory)}`
+    system += `\n\n${memoryInstructions(bot.name, tools.memoryProject)}`
+    if (tools.coreMemory !== undefined) system += `\n\n${corePrompt(tools.coreMemory, tools.memoryProject)}`
+    if (tools.recall.length > 0) system += `\n\n${recallPrompt(tools.recall)}`
   }
 
   if (toolNames.has("skill_manage")) {
@@ -131,17 +162,32 @@ export const systemPrompt = (context: PromptContext): string => {
   return system
 }
 
+/** A team report as models see it, e.g. `[Decision] Use Kotlin: Use Kotlin for the app.`. */
+export const reportText = (report: ReportPart): string => {
+  const kind = `${report.kind.charAt(0).toUpperCase()}${report.kind.slice(1)}`
+  return report.title === null || report.title.length === 0 ? `[${kind}] ${report.text}` : `[${kind}] ${report.title}: ${report.text}`
+}
+
+/** A message's text with its team reports, for prompts. */
+export const promptText = (parts: ReadonlyArray<MessagePart>): string =>
+  parts
+    .flatMap((part) => (part.type === "text" ? [part.text] : part.type === "report" ? [reportText(part)] : []))
+    .join("\n\n")
+    .trim()
+
 /**
  * The conversation as this bot sees it: its own replies as assistant turns, everyone else's
- * (other bots included, prefixed with their name) as user turns.
+ * (other bots included, prefixed with their name) as user turns. A bot's request in a handoff is
+ * a user message with its bot id, prefixed the same way.
  */
 export const historyTurns = (messages: ReadonlyArray<Message>, bot: Bot): Array<PromptTurn> => {
   const turns: Array<PromptTurn> = []
   for (const message of messages) {
     if (message.status === "streaming" || message.status === "error") continue
-    const text = messageText(message.parts)
+    const text = promptText(message.parts)
     if (message.role === "user") {
-      const content = message.replyQuote ? `(Replying to: "${message.replyQuote}")\n${text}` : text
+      const quoted = message.replyQuote ? `(Replying to: "${message.replyQuote}")\n${text}` : text
+      const content = message.botId !== null && quoted.length > 0 ? `[${message.senderName}]: ${quoted}` : quoted
       if (content.length > 0) turns.push({ role: "user", content })
     } else if (text.length > 0) {
       if (message.botId === bot.id || (message.botId === null && message.senderName === bot.name)) {

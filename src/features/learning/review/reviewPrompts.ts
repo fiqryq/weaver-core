@@ -15,9 +15,10 @@ const memoryRouting = (botName: string): string =>
   `  • ${coreTitle} (the note "${coreTitle}", identifier "${corePermalink}", which every bot reads at the start ` +
   `of each reply): who the user is — persona, preferences, communication and work style, personal details they ` +
   `revealed, their team's standing rules, and expectations about how bots should behave. Only truly durable, ` +
-  `important facts. Add them with edit_note (identifier "${corePermalink}", operation "append"), one line each, ` +
-  `like "- [fact] The user prefers short answers (via ${botName})".\n` +
-  `  • A note in the "${memoryFolder}" folder (write_note with folder "${memoryFolder}"): other durable facts — ` +
+  `important facts. Add them with edit_note (identifier "${corePermalink}", operation "append"), one short line ` +
+  `each, like "- [fact] The user prefers short answers (via ${botName})". It's condensed from time to time ` +
+  `(duplicates merged, outdated facts dropped), so anything not needed on every reply goes in a note instead.\n` +
+  `  • A note in the "${memoryFolder}" directory (write_note with directory "${memoryFolder}"): other durable facts — ` +
   `people, projects, decisions, and the ENVIRONMENT you operate in: tool quirks, project conventions, config ` +
   `gotchas, paths and endpoints that matter. When a note on the topic already exists, add to it with edit_note ` +
   `(operation "append") instead of writing a duplicate.\n\n` +
@@ -88,7 +89,9 @@ const readBeforeWrite =
   `on what skill_view just returned (viewing a supporting file with file_path doesn't count). If SKILL.md changes ` +
   `after you view it, writes are refused until you view it again. Creating a brand-new skill needs no prior read. ` +
   `If a write is refused with a read-before-write error, call skill_view for the named skill once and retry the ` +
-  `write once; do not loop. Skills the user wrote can only be patched here, never rewritten with edit.\n\n`
+  `write once; do not loop. Skills the user wrote can only be patched here, never rewritten with edit.\n\n` +
+  `Skills marked (library) are shared with other bots: patch one only with a lesson that holds for every bot using it, ` +
+  `and create new skills in your own store (skill_manage create always does).\n\n`
 
 export const skillReviewPrompt =
   `Review the conversation above and update your skill library. Be ACTIVE — most sessions produce at least one ` +

@@ -1,0 +1,95 @@
+- banner:
+  - button "Skip to content" [e1]
+  - button "Accessibility Feedback" [e2]
+  - link "Back to Bing search" [e3]:
+    - /url: /?FORM=Z9FD1
+    - heading "Back to Bing search" [level=1]
+  - search:
+    - img
+    - searchbox "Enter your search here - Search suggestions will show as you type" [e4]: Effect TypeScript library
+    - button "Search using an image" [e5]
+    - button "Search" [e6]
+  - complementary "Account Rewards and Preferences":
+    - button "Microsoft Rewards" [e7]:
+      - text: Rewards
+      - img
+    - link "Sign in" [e8]:
+      - /url: javascript:void(0)
+  - navigation "Search Filter":
+    - list:
+      - listitem [e9]:
+        - link "All" [e10]:
+          - /url: /?scope=web&FORM=HDRSC1
+      - listitem [e11]:
+        - link "AI Mode" [e12]:
+          - /url: /copilotsearch?q=Effect+TypeScript+library&FORM=CSSCOP
+          - img
+          - text: AI Mode
+      - listitem [e13]:
+        - link "Images" [e14]:
+          - /url: https://www.bing.com/ck/a?!&&p=8b47223a311e25e70e1673153e0ce0fcb2e8e1c7998c8597a1954b713fba11a8JmltdHM9MTc5MTY3NjgwMA&ptn=3&ver=2&hsh=4&fclid=0874df3a-cc25-6452-33cd-c8d5cd9465bb&u=a1L2ltYWdlcy9zZWFyY2g_cT1FZmZlY3QrVHlwZVNjcmlwdCtsaWJyYXJ5JkZPUk09SERSU0My&ntb=1
+      - listitem [e15]:
+        - link "Videos" [e16]:
+          - /url: https://www.bing.com/ck/a?!&&p=14664af8272240e1155b47e7ba62380161187e3fa1a4ee9fa7c49df6416b0060JmltdHM9MTc5MTY3NjgwMA&ptn=3&ver=2&hsh=4&fclid=0874df3a-cc25-6452-33cd-c8d5cd9465bb&u=a1L3ZpZGVvcy9zZWFyY2g_cT1FZmZlY3QrVHlwZVNjcmlwdCtsaWJyYXJ5JkZPUk09SERSU0Mz&ntb=1
+      - listitem [e17]:
+        - link "Maps" [e18]:
+          - /url: https://www.bing.com/ck/a?!&&p=dd48e39089e83efa8340255915bc54aa793a93b0677a378c467b8f33d0876f6fJmltdHM9MTc5MTY3NjgwMA&ptn=3&ver=2&hsh=4&fclid=0874df3a-cc25-6452-33cd-c8d5cd9465bb&u=a1L21hcHM_cT1FZmZlY3QrVHlwZVNjcmlwdCtsaWJyYXJ5JkZPUk09SERSU0M0&ntb=1
+      - listitem [e19]:
+        - button "More" [e20]:
+          - img
+          - text: More
+- main "Search Results":
+  - text: About 189,000 results
+  - list:
+    - listitem [e21]:
+      - link "vocaberry.com" [e22]:
+        - /url: https://www.bing.com/ck/a?!&&p=16f19734cbbcad3320e88c0a7f594cb881cd72b2add545fbb07b9cb58863c910JmltdHM9MTc5MTY3NjgwMA&ptn=3&ver=2&hsh=4&fclid=0874df3a-cc25-6452-33cd-c8d5cd9465bb&u=a1aHR0cHM6Ly92b2NhYmVycnkuY29tL2dyYW1tYXIvYWZmZWN0LXZzLWVmZmVjdC8&ntb=1
+        - text: vocaberry.com https://vocaberry.com › grammar › affect-vs-
+        - strong: effect
+      - heading "Affect vs. Effect – What’s the Difference?" [level=2]:
+        - link "Affect vs. Effect – What’s the Difference?" [e23]:
+          - /url: https://www.bing.com/ck/a?!&&p=16f19734cbbcad3320e88c0a7f594cb881cd72b2add545fbb07b9cb58863c910JmltdHM9MTc5MTY3NjgwMA&ptn=3&ver=2&hsh=4&fclid=0874df3a-cc25-6452-33cd-c8d5cd9465bb&u=a1aHR0cHM6Ly92b2NhYmVycnkuY29tL2dyYW1tYXIvYWZmZWN0LXZzLWVmZmVjdC8&ntb=1
+          - text: Affect vs.
+          - strong: Effect
+          - text: – What’s the Difference?
+      - paragraph:
+        - text: In this article, you’ll learn the difference between affect vs. effect, with grammar explanations, everyday examples, and simple tips to …
+        - link "Read more" [e24]:
+          - /url: https://www.bing.com/ck/a?!&&p=16f19734cbbcad3320e88c0a7f594cb881cd72b2add545fbb07b9cb58863c910JmltdHM9MTc5MTY3NjgwMA&ptn=3&ver=2&hsh=4&fclid=0874df3a-cc25-6452-33cd-c8d5cd9465bb&u=a1aHR0cHM6Ly92b2NhYmVycnkuY29tL2dyYW1tYXIvYWZmZWN0LXZzLWVmZmVjdC8&ntb=1
+    - listitem [e25]:
+      - link "cambridge.org" [e26]:
+        - /url: https://www.bing.com/ck/a?!&&p=48e97576fb1f4b859c4058c7ec8573298d2cd3e343545baa36820e2d6a0844a9JmltdHM9MTc5MTY3NjgwMA&ptn=3&ver=2&hsh=4&fclid=0874df3a-cc25-6452-33cd-c8d5cd9465bb&u=a1aHR0cHM6Ly9kaWN0aW9uYXJ5LmNhbWJyaWRnZS5vcmcvZGljdGlvbmFyeS9lbmdsaXNoL2VmZmVjdA&ntb=1
+        - text: cambridge.org https://dictionary.cambridge.org › dictionary › english ›
+        - strong: effect
+      - heading "EFFECT | English meaning - Cambridge Dictionary" [level=2]:
+        - link "EFFECT | English meaning - Cambridge Dictionary" [e27]:
+          - /url: https://www.bing.com/ck/a?!&&p=48e97576fb1f4b859c4058c7ec8573298d2cd3e343545baa36820e2d6a0844a9JmltdHM9MTc5MTY3NjgwMA&ptn=3&ver=2&hsh=4&fclid=0874df3a-cc25-6452-33cd-c8d5cd9465bb&u=a1aHR0cHM6Ly9kaWN0aW9uYXJ5LmNhbWJyaWRnZS5vcmcvZGljdGlvbmFyeS9lbmdsaXNoL2VmZmVjdA&ntb=1
+          - strong: EFFECT
+          - text: "| English meaning - Cambridge Dictionary"
+      - paragraph: "EFFECT definition: 1. the result of a particular influence: 2. to produce or achieve the results you want: 3. If you…. Learn more."
+    - listitem [e28]:
+      - link "effect.website" [e29]:
+        - /url: https://www.bing.com/ck/a?!&&p=a24edc72f38acd8eb19e8595e89cafe0f1d1b75483069638745ba1baeb0086b8JmltdHM9MTc5MTY3NjgwMA&ptn=3&ver=2&hsh=4&fclid=0874df3a-cc25-6452-33cd-c8d5cd9465bb&u=a1aHR0cHM6Ly9lZmZlY3Qud2Vic2l0ZS8&ntb=1
+        - text: effect.website https://
+        - strong: effect
+        - text: .website
+      - heading "Effect | Production Grade TypeScript" [level=2]:
+        - link "Effect | Production Grade TypeScript" [e30]:
+          - /url: https://www.bing.com/ck/a?!&&p=a24edc72f38acd8eb19e8595e89cafe0f1d1b75483069638745ba1baeb0086b8JmltdHM9MTc5MTY3NjgwMA&ptn=3&ver=2&hsh=4&fclid=0874df3a-cc25-6452-33cd-c8d5cd9465bb&u=a1aHR0cHM6Ly9lZmZlY3Qud2Vic2l0ZS8&ntb=1
+          - strong: Effect
+          - text: "| Production Grade TypeScript"
+      - paragraph: Effect covers a broader scope than most libraries in the TypeScript ecosystem — combining async control, dependency management, …
+    - listitem [e31]:
+      - link "merriam-webster.com" [e32]:
+        - /url: https://www.bing.com/ck/a?!&&p=76e6c845113e020dbe00da6e0bbcf4fc9d2e5043fdfbb527e97cbe5e4877f28aJmltdHM9MTc5MTY3NjgwMA&ptn=3&ver=2&hsh=4&fclid=0874df3a-cc25-6452-33cd-c8d5cd9465bb&u=a1aHR0cHM6Ly93d3cubWVycmlhbS13ZWJzdGVyLmNvbS9kaWN0aW9uYXJ5L2VmZmVjdA&ntb=1
+        - text: merriam-webster.com https://
+        - strong: www.merriam-webster.com
+        - text: › dictionary ›
+        - strong: effect
+      - heading "EFFECT Definition & Meaning - Merriam-Webster" [level=2]:
+        - link "EFFECT Definition & Meaning - Merriam-Webster" [e33]:
+          - /url: https://www.bing.com/ck/a?!&&p=76e6c845113e020dbe00da6e0bbcf4fc9d2e5043fdfbb527e97cbe5e4877f28aJmltdHM9MTc5MTY3NjgwMA&ptn=3&ver=2&hsh=4&fclid=0874df3a-cc25-6452-33cd-c8d5cd9465bb&u=a1aHR0cHM6Ly93d3cubWVycmlhbS13ZWJzdGVyLmNvbS9kaWN0aW9uYXJ5L2VmZmVjdA&ntb=1
+          - strong: EFFECT
+          - text: Definition & Meaning -
+          - strong: Merriam-Webster
+      - paragraph: "3 days ago · The meaning of EFFECT is an event, condition, or state of affairs that is produced by a cause : result, outcome. How to use …"
