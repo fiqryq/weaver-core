@@ -1,10 +1,100 @@
 # weaver-core
 
-The Weaver agent server. It runs on your VPS, stores your bots, chats, provider keys and connected apps, and runs the bots: they reply, run shell commands, edit files, browse the web, call MCP apps, and learn reusable skills as they work. The Mac app in `../weaver-mac` is its client.
+The agent server behind Weaver, a Mac app for running a crew of AI bots on your own computer in the cloud.
 
-Built with [Bun](https://bun.sh) and [Effect 4](https://effect.website), with SQLite for storage.
+weaver-core runs on your VPS. It keeps your bots, chats, provider keys and connected apps, and does the actual work: bots reply, run shell commands, edit files, browse the web, call MCP apps, remember what they learn, ask each other for help and work together in teams. The Mac app is a client that talks to it over [Tailscale](https://tailscale.com).
 
-## Run it
+Built with [Bun](https://bun.sh), [Effect 4](https://effect.website) and SQLite. It ships as a single binary.
+
+## What bots can do
+
+- **Work on a real computer.** Each bot gets its own workspace and, on a VPS, its own Linux user. Bots run commands, read and edit files, and ask for your approval before risky steps.
+- **Browse the web.** With [camofox-browser](https://github.com/jo-inc/camofox-browser) (an anti-detection Firefox) or Playwright, on a virtual desktop you can watch live. Without a browser, `web_search` and `web_fetch` still work.
+- **Use any OpenAI-compatible model.** Presets for DeepSeek, OpenAI, Qwen, Kimi, GLM and MiniMax, plus any custom endpoint.
+- **Connect apps over MCP.** Add MCP servers as integrations, and bots get their tools.
+- **Remember.** With [Basic Memory](https://github.com/basicmachines-co/basic-memory), bots share a knowledge base of Markdown notes, keep a Core Memory note about you, recall related notes before replying, and condense their memory when it grows.
+- **Learn skills.** Bots write `SKILL.md` skills as they work. A shared skills library lets you install skills from GitHub or a catalog, import your own, and choose which bots get each one. Skill scripts are runnable.
+- **Hand off work.** A bot can ask a teammate for help with `ask_bot`. The teammate gets the context, works in its own conversation, and the result is saved to the knowledge base.
+- **Work as a team.** A team has a manager bot and members with roles, optionally with subgroups. You brief the manager in a private chat, the team works in a room you watch, and the manager reports decisions, questions and a final summary back to you.
+
+## Install on your VPS
+
+### What to buy
+
+| | Recommended | Minimum |
+| --- | --- | --- |
+| System | Ubuntu 24.04 (or Debian 12), fresh install | Ubuntu or Debian with systemd |
+| CPU | 2 vCPU, x64 | 1 vCPU, x64 or arm64 |
+| Memory | 4 GB | 2 GB with swap (see below) |
+| Disk | 40 GB SSD | 25 GB |
+
+Models run on your provider's servers, so the VPS mostly needs memory for the browser and Basic Memory, not CPU. Roughly: the server uses about 180 MB, the browser about 350 MB plus 30 to 120 MB per open tab (capped at 1.5 GB together with the server), Basic Memory about 0.5 GB, and the virtual desktop and system a few hundred MB more. Pick the region closest to you; any provider that gives you root SSH works. You don't need a public IP or open ports other than SSH.
+
+On 2 GB, add swap before installing:
+
+```sh
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+### With the Mac app (recommended)
+
+1. Install Tailscale on your Mac and sign in.
+2. In Weaver, click **Copy Setup Command** (on the first-run screen, or in **Settings › Computer**).
+3. SSH into your VPS, paste the command and press Return.
+4. Open the Tailscale link it prints and sign in with the same account.
+5. Click the `weaver://connect` link it prints at the end. It fills in the server address, token, desktop, stats and memory settings in the app.
+6. Add a model provider key in **Settings › Models**. The key is stored on the VPS.
+
+The setup command installs:
+
+- this server as the `weaver-agent` systemd service, checked against the release's `SHA256SUMS`;
+- Tailscale and a firewall (ufw) that only allows SSH and Tailscale;
+- a separate Linux user for each bot;
+- Camoufox, a virtual desktop (Xvfb and noVNC) and Glances for machine stats;
+- Basic Memory;
+- `weaver-update`, nightly backups and `weaver-firewall`.
+
+Running it again is safe: it keeps your token and data and updates everything. Set options before the command, for example `SKIP_BROWSER=1` (no browser, saves about 1.4 GB of disk) or `SKIP_MEMORY=1` (no Basic Memory, saves about 0.5 GB of memory).
+
+### Without the Mac app
+
+You can run the server on its own and use the API directly. This skips the browser, memory, bot users and firewall that the setup command adds.
+
+```sh
+ARCH=$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/')
+BASE=https://github.com/fiqryq/weaver-core/releases/download/server-latest
+curl -fL -O "$BASE/weaver-server-linux-$ARCH" -O "$BASE/SHA256SUMS"
+sha256sum -c --ignore-missing SHA256SUMS
+chmod +x "weaver-server-linux-$ARCH"
+
+WEAVER_TOKEN=$(openssl rand -hex 32) WEAVER_LISTEN=127.0.0.1:7700 WEAVER_DATA_DIR=$HOME/weaver-data \
+  ./weaver-server-linux-$ARCH
+```
+
+Keep it on `127.0.0.1` or a private network such as Tailscale: anyone with the token can run commands as the server's user.
+
+### Updating
+
+```sh
+sudo weaver-update            # latest server-latest build
+sudo weaver-update v0.2.0     # a tagged release
+sudo weaver-update --force    # reinstall even if the binary hasn't changed
+```
+
+It checks the download against `SHA256SUMS` and rolls back if `/v1/health` doesn't answer within 30 seconds.
+
+### Troubleshooting
+
+| Problem | Check |
+| --- | --- |
+| The app can't connect | `systemctl status weaver-agent`, then `journalctl -u weaver-agent -n 50` |
+| Wrong address | `WEAVER_LISTEN` in `/etc/weaver/agent.env` |
+| Lost the token | `sudo cat /etc/weaver/server-token` |
+| Connect by hand | **Settings › Computer**: `http://<tailscale-ip>:7700` and the token |
+
+## Run it locally
 
 ```sh
 bun install
@@ -12,23 +102,13 @@ WEAVER_TOKEN=dev-token-change-me WEAVER_LISTEN=127.0.0.1:7700 WEAVER_DATA_DIR=/t
 curl http://127.0.0.1:7700/v1/health
 ```
 
-Every route except `/v1/health` needs `Authorization: Bearer <WEAVER_TOKEN>`. The OpenAPI description is at `/v1/openapi.json`.
-
-Bots browse with [camofox-browser](https://github.com/jo-inc/camofox-browser). To give them a browser locally, start it in another terminal (it downloads Camoufox, about 700 MB, on first run):
+To give bots a browser, start camofox-browser in another terminal (it downloads Camoufox, about 700 MB, on first run):
 
 ```sh
 CAMOFOX_PORT=9377 CAMOFOX_BIND_HOST=127.0.0.1 npx @askjo/camofox-browser
 ```
 
-Without it, `web_search` falls back to DuckDuckGo and `web_fetch` fetches pages directly.
-
-## Teams
-
-A team (`/v1/teams`) is a manager bot plus members with roles, and optionally subgroups one level deep, each led by a member of its parent. Creating one makes two conversations: the team's room (`kind: "team-room"`), where the manager and members work and you can only watch, and your private chat with the manager (`kind: "team-private"`), both with the team's `teamId`. In the private chat the manager has `brief_team` and `team_status`: briefing starts a session in the room, or passes an update to the running one. Reports (`{ type: "report", kind: "brief" | "decision" | "question" | "summary" }` message parts) show up in the private chat, and the room's `brief` reports carry your instructions.
-
-`POST /v1/teams/:id/stop` stops the team's session and any member replies in it; `POST /v1/teams/:id/resume` continues a team that's `waiting` or `interrupted` (teams that were working when the server stopped). `team-changed` events on `/v1/events` say when to refetch a team. Team conversations follow the team: posting or regenerating in a room, changing their bots or deleting them answers `409`/`400`, and a bot that manages a team can't be deleted.
-
-## Scripts
+For memory, run [Basic Memory](https://github.com/basicmachines-co/basic-memory) as an MCP server and set `WEAVER_MEMORY_URL`, for example `http://127.0.0.1:8765/mcp`.
 
 | Command | What it does |
 | --- | --- |
@@ -37,6 +117,35 @@ A team (`/v1/teams`) is a manager bot plus members with roles, and optionally su
 | `bun run check` | Type-check |
 | `bun run build` | Compile a single binary to `dist/weaver-server` |
 | `bun run build:linux-x64`, `build:linux-arm64` | Compile the Linux release binaries |
+
+## API
+
+Every route except `/v1/health` needs `Authorization: Bearer <WEAVER_TOKEN>`. The full OpenAPI description is at `/v1/openapi.json`.
+
+| Route | What it's for |
+| --- | --- |
+| `GET /v1/health` | Status, version, uptime, free disk, and which features are on (`memory`, `browser`, `handoffs`, `skillsLibrary`, `teams`) |
+| `/v1/bots` | Bots, their tools, integrations, teammates and skills (`/v1/bots/:id/skills`) |
+| `/v1/conversations` | Chats and messages; posting a message starts a run. Also `cancel`, `regenerate` and `resume` |
+| `GET /v1/events`, `GET /v1/conversations/:id/events` | Server-sent events: run progress, approvals, and changes to skills and teams |
+| `POST /v1/approvals/:id`, `POST /v1/runs/:id/cancel` | Answer an approval request, stop a run |
+| `/v1/providers` | Model providers and their keys |
+| `/v1/integrations` | MCP integrations |
+| `/v1/memory` | Basic Memory projects, the knowledge graph, and note history and versions |
+| `/v1/skills` | The shared skills library: `catalog`, `install`, `import`, `promote` and `:name/bots` |
+| `/v1/teams` | Teams, plus `stop` and `resume` |
+| `/v1/profile` | Your profile and settings |
+
+### Teams
+
+Creating a team makes two conversations, both with the team's `teamId`:
+
+- **The team room** (`kind: "team-room"`): the manager and members work here, and you can only watch.
+- **Your private chat with the manager** (`kind: "team-private"`): the manager has `brief_team` and `team_status`. Briefing starts a session in the room, or passes an update to the running one.
+
+Reports are `{ type: "report", kind: "brief" | "decision" | "question" | "summary" }` message parts. They show up in the private chat, and the room's `brief` reports carry your instructions. A session runs until the manager finishes the goal. It doesn't have a time limit; after `WEAVER_TEAM_PAUSE_STEPS` steps without a report it pauses and asks you whether to go on.
+
+`POST /v1/teams/:id/stop` stops a session; `POST /v1/teams/:id/resume` continues a team that's `waiting` or `interrupted` (it was working when the server stopped). Posting or regenerating in a room, or changing its bots, answers `409` or `400`, and a bot that manages a team can't be deleted.
 
 ## Settings
 
@@ -50,6 +159,7 @@ A team (`/v1/teams`) is a manager bot plus members with roles, and optionally su
 | `WEAVER_MEMORY_RECALL` | `on` | Before each reply of a bot with memory, searches memory for the user's message (up to 3 seconds) and adds short previews of related notes to the prompt; `off` turns it off |
 | `WEAVER_MEMORY_HISTORY_MINUTES` | `10` | Minutes between checks for memory notes that changed, so a note's history (`/v1/memory/history`) also has edits made outside Weaver; `0` only saves versions around bot writes and when a history is opened |
 | `WEAVER_MEMORY_PROJECTS_DIR` | empty | Folder, on Basic Memory's machine, that projects created from Weaver go in; empty uses `basic-memory-projects` next to the default project's folder |
+| `WEAVER_CORE_MEMORY_CONDENSE_AT` | `3200` | Core Memory longer than this many characters is condensed in the background (the previous text is kept in `weaver/core-memory-history`); `0` turns it off |
 | `WEAVER_BROWSER` | `camofox` | Bots' browser: `camofox`, `playwright` (an MCP server started with `WEAVER_BROWSER_COMMAND`) or `off` |
 | `WEAVER_CAMOFOX_URL` | `http://127.0.0.1:9377` | camofox-browser's address |
 | `WEAVER_CAMOFOX_KEY` | empty | camofox-browser's access key (its `CAMOFOX_ACCESS_KEY`) |
@@ -59,12 +169,26 @@ A team (`/v1/teams`) is a manager bot plus members with roles, and optionally su
 | `WEAVER_HANDOFF_TIMEOUT_MINUTES` | `15` | Longest a bot waits for a teammate it asked with `ask_bot` before giving up and stopping the teammate's reply |
 | `WEAVER_TEAM_NUDGE_STEPS` | `40` | Steps a team's manager can take without reporting before it's reminded to report to you |
 | `WEAVER_TEAM_PAUSE_STEPS` | `150` | Steps without a report after which a team pauses and asks you whether to go on |
-| `WEAVER_CORE_MEMORY_CONDENSE_AT` | `3200` | Core Memory longer than this many characters is condensed in the background (the previous text is kept in `weaver/core-memory-history`); `0` turns it off |
-| `WEAVER_BOT_USER` | empty | Runs bots' shell commands through `sudo -n`. `per-bot` (what the VPS uses) gives each bot its own user from `/usr/local/lib/weaver/weaver-bot-user`; a user name runs every bot as that user; empty runs them as the server's user |
-| `WEAVER_BOT_GROUP` | `weaver-work` | Group shared by the server and bots' users; workspaces get it (mode `2770`) |
 | `WEAVER_SKILL_CATALOG` | `anthropics/skills/skills` | GitHub folders listed by `GET /v1/skills/catalog`, comma-separated, each `owner/repo[/path][@ref]` (without `@ref`, the default branch). Each skill is a folder there with a `SKILL.md` |
 | `WEAVER_GITHUB_TOKEN` | empty | GitHub token for installing skills and listing the catalog. Without one GitHub allows 60 API requests an hour; sent only to `api.github.com` and `raw.githubusercontent.com` |
+| `WEAVER_BOT_USER` | empty | Runs bots' shell commands through `sudo -n`. `per-bot` (what the VPS uses) gives each bot its own user from `/usr/local/lib/weaver/weaver-bot-user`; a user name runs every bot as that user; empty runs them as the server's user |
+| `WEAVER_BOT_GROUP` | `weaver-work` | Group shared by the server and bots' users; workspaces get it (mode `2770`) |
 | `DISPLAY` | `:1` | Virtual desktop the browser draws on. Commands that run as bot users don't get it, so they can't open windows there |
+
+## Data
+
+Inside `WEAVER_DATA_DIR`:
+
+| Path | What's there |
+| --- | --- |
+| `weaver.db` | SQLite database: bots, conversations, providers, integrations, teams |
+| `bots/<id>/workspace` | The bot's own folder |
+| `bots/<id>/home` | Its Linux user's home, in per-bot mode |
+| `bots/<id>/skills` | Skills the bot wrote |
+| `skills-library/` | The shared skills library, assigned to bots through `librarySkills` |
+| `backups/` | Nightly backups of the database and skills (on a VPS) |
+
+With `WEAVER_BOT_USER` set, bots' users can reach their workspaces but can't list the data folders or open the database or skills.
 
 ## Layout
 
@@ -76,6 +200,7 @@ src/
     db/                   SQLite database and migrations
     http/                 composed HttpApi, shared errors, bearer auth, handler wiring
     lib/                  small shared helpers
+    os/                   running commands as bot users
   features/               one folder per feature: schemas, services, api.ts (endpoint group), handlers.ts
     bots/                 bots and their repository
     conversations/        conversations and messages
@@ -83,19 +208,16 @@ src/
     providers/            model providers
     integrations/         MCP integrations and the MCP hub
     profile/              the user's profile and settings
-    learning/             skills (store and /v1/bots/:id/skills endpoints), the shared library (/v1/skills) and self-review
-    memory/               Basic Memory projects, each project's knowledge graph and note history (/v1/memory)
+    learning/             bot skills, the shared library (/v1/skills), Core Memory and self-review
+    memory/               Basic Memory projects, the knowledge graph and note history (/v1/memory)
     teams/                teams (/v1/teams), their rooms and the sessions their managers lead
-  tools/                  AgentTool, builtin/ (shell, files, memory, MCP, browser, web, ask_bot, team tools) and learning/ (skills, session search)
-test/
-  support/                shared test layers and fixtures
-  platform/, features/, tools/  Vitest suites, mirroring src/
-scripts/                  VPS helpers shipped with each release, see below
+  tools/                  AgentTool, builtin/ (shell, files, memory, MCP, browser, web, ask_bot, team tools)
+                          and learning/ (skills, session search)
+test/                     Vitest suites mirroring src/, with shared layers and fixtures in support/
+scripts/                  VPS helpers shipped with each release
 deploy/test/              systemd test harness for the setup script
 .github/workflows/        release.yml: tests, Linux builds and GitHub releases
 ```
-
-Inside `WEAVER_DATA_DIR`: `weaver.db` (SQLite), `bots/<id>/workspace` (the bot's own folder), `bots/<id>/home` (its user's home, in per-bot mode), `bots/<id>/skills` (its `SKILL.md` skills), `skills-library/` (the shared skills library, assigned to bots through `librarySkills`) and `backups/`. With `WEAVER_BOT_USER` set, bots' users can pass through to workspaces but can't list the data folders or open the database or skills.
 
 | Script | What it does |
 | --- | --- |
@@ -103,11 +225,9 @@ Inside `WEAVER_DATA_DIR`: `weaver.db` (SQLite), `bots/<id>/workspace` (the bot's
 | `scripts/weaver-update` | Updates the installed server from a release, checked against `SHA256SUMS`, and rolls back if `/v1/health` doesn't answer within 30 seconds. Installed as `/usr/local/bin/weaver-update` |
 | `scripts/check-bot-isolation.sh` | Run as root on a VPS to check bots' users can't reach the server's data, each other's files or the local services' ports |
 
-## Deploying
+## Releases
 
-The setup script in `../weaver-mac/weaver/Resources/weaver-vps-setup.sh` installs the latest release as a systemd service, with `weaver-update`, nightly backups and per-bot users. See [`../docs/vps-setup.md`](../docs/vps-setup.md) for the full guide.
-
-Releases come from `.github/workflows/release.yml` in this repository ([fiqryq/weaver-core](https://github.com/fiqryq/weaver-core)). Every pull request and push runs the type check, the tests and shellcheck. Pushes to `main` build `weaver-server-linux-x64` and `weaver-server-linux-arm64` and refresh the rolling `server-latest` prerelease with them, `weaver-bot-user`, `weaver-update` and `SHA256SUMS`. Tags named `v*` or `server-v*` get a versioned release with the same files.
+`.github/workflows/release.yml` runs the type check, the tests and shellcheck on every pull request and push. Pushes to `main` build `weaver-server-linux-x64` and `weaver-server-linux-arm64` and refresh the rolling [`server-latest`](https://github.com/fiqryq/weaver-core/releases/tag/server-latest) prerelease with them, `weaver-bot-user`, `weaver-update` and `SHA256SUMS`. Tags named `v*` or `server-v*` get a versioned release with the same files.
 
 To test the setup script on a real systemd (needs Docker and Bun):
 
