@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Local data (dev server database, bot workspaces and skills)
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Tests and tooling caches
+coverage/
+.vite/
+.vitest/
+.eslintcache
+
+# Logs
+*.log
+logs/
+
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
