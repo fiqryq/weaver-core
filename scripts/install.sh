@@ -813,13 +813,13 @@ install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 711 "$DATA_DIR" "$DATA_DIR/b
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 700 "$DATA_DIR/backups"
 find "$DATA_DIR" -mindepth 1 -maxdepth 1 ! -name bots -exec chmod -R go-rwx {} +
 for BOT_DIR in "$DATA_DIR"/bots/*; do
-  [ -d "$BOT_DIR" ] && [ ! -L "$BOT_DIR" ] || continue
+  if [ ! -d "$BOT_DIR" ] || [ -L "$BOT_DIR" ]; then continue; fi
   chown "$SERVICE_USER:$SERVICE_USER" "$BOT_DIR"
   chmod 711 "$BOT_DIR"
   # home belongs to the bot's own user (see $BOT_USER_HELPER).
   find "$BOT_DIR" -mindepth 1 -maxdepth 1 ! -name workspace ! -name home -exec chmod -R go-rwx {} +
   WORKSPACE="$BOT_DIR/workspace"
-  [ -d "$WORKSPACE" ] && [ ! -L "$WORKSPACE" ] || continue
+  if [ ! -d "$WORKSPACE" ] || [ -L "$WORKSPACE" ]; then continue; fi
   # Only the first run walks the whole workspace; later ones just fix the folder itself.
   if [ "$(stat -c %G "$WORKSPACE")" != "$BOT_GROUP" ]; then
     chgrp -R "$BOT_GROUP" "$WORKSPACE"
