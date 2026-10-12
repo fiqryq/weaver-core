@@ -1047,6 +1047,26 @@ if [ -n "$MEMORY_TOKEN_VALUE" ]; then
 fi
 CONNECT_URL="$CONNECT_URL&agent=$AGENT_URL&agentToken=$SERVER_TOKEN"
 
+# weaver-connect prints the link again later. It carries the server token, so only root can read it.
+CONNECT_LINK_FILE=/etc/weaver/connect-link
+(
+  umask 077
+  printf '%s\n' "$CONNECT_URL" > "$CONNECT_LINK_FILE"
+)
+cat > /usr/local/bin/weaver-connect <<EOF
+#!/usr/bin/env bash
+# Prints the weaver://connect link that connects Weaver on your Mac to this computer. Copy it and click
+# Paste Connection Link in Weaver (Settings › Computer), or open it on the Mac.
+set -euo pipefail
+if [ "\$(id -u)" -ne 0 ]; then exec sudo "\$0" "\$@"; fi
+if [ ! -s $CONNECT_LINK_FILE ]; then
+  echo "There's no connect link yet. Run Weaver's install script first." >&2
+  exit 1
+fi
+cat $CONNECT_LINK_FILE
+EOF
+chmod 755 /usr/local/bin/weaver-connect
+
 step "Checking the agent server"
 AGENT_OK=""
 for _ in $(seq 1 20); do
@@ -1071,7 +1091,8 @@ if [ "$BROWSER_ENGINE" = camofox ]; then
 fi
 
 printf '\n\033[1mDone. This computer is ready for Weaver.\033[0m\n\n'
-echo "Click this link on your Mac to connect Weaver (or paste it into Safari):"
+echo "Connect Weaver with this link: click it on your Mac, or copy it and click Paste Connection Link"
+echo "in Weaver (Settings › Computer). Run weaver-connect to see it again."
 printf '  \033[4m%s\033[0m\n\n' "$CONNECT_URL"
 echo "noVNC password: $VNC_PASSWORD"
 echo "Screen:         $SCREEN_URL"
