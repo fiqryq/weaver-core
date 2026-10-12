@@ -173,7 +173,6 @@ SUDOERS_NEW="$(mktemp)"
 cat > "$SUDOERS_NEW" <<EOF
 # The Weaver agent server runs each bot's commands as that bot's user (members of $BOTS_GROUP),
 # creates and deletes those users with $BOT_USER_HELPER, and can still use the older shared $BOT_USER.
-Defaults:$SERVICE_USER !requiretty
 $SERVICE_USER ALL=($BOT_USER) NOPASSWD: ALL
 $SERVICE_USER ALL=(%$BOTS_GROUP) NOPASSWD: ALL
 $SERVICE_USER ALL=(root) NOPASSWD: $BOT_USER_HELPER
