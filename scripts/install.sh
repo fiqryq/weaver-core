@@ -472,6 +472,15 @@ if [ -z "$NODE_MAJOR" ] || [ "$NODE_MAJOR" -lt 22 ]; then
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
   apt-get install -y -qq nodejs >/dev/null
 fi
+# Ubuntu's and Debian's own nodejs packages leave npm and npx to a separate package.
+if ! command -v npm >/dev/null 2>&1 || ! command -v npx >/dev/null 2>&1; then
+  apt-get install -y -qq npm >/dev/null
+fi
+if ! command -v npm >/dev/null 2>&1 || ! command -v npx >/dev/null 2>&1; then
+  echo "Node.js $(node -v 2>/dev/null) is installed without npm and npx, and installing npm didn't add them." >&2
+  echo "Install npm (apt-get install npm), then run the script again." >&2
+  exit 1
+fi
 
 if [ "$BROWSER_ENGINE" != camofox ] && { [ -f /etc/systemd/system/weaver-camofox.service ] || [ -d "$CAMOFOX_ROOT" ]; }; then
   step "Removing Camoufox (the browser is now $BROWSER_ENGINE)"
