@@ -1,3 +1,4 @@
+import type { Prompt } from "effect/ai"
 import { truncate } from "../../platform/lib/util.ts"
 import { askBotToolName, handoffPrompt, teammatesPrompt } from "../../tools/builtin/AskBot.ts"
 import { corePrompt, memoryInstructions } from "../../tools/builtin/Memory.ts"
@@ -229,6 +230,65 @@ export const toolTranscript = (parts: ReadonlyArray<MessagePart>): string | unde
     length += entry.length
   }
   return `The tool calls you made in the reply under review, in order (long values are cut):\n\n${entries.join("\n\n")}`
+}
+
+/** Characters of earlier tool output a reply's prompt keeps whole, newest first, besides its latest round. */
+export const toolContextBudget = 40_000
+/** Outputs this short are never cleared: they cost little and often hold the fact that matters. */
+const clearableLength = 1_000
+/** How much of a cleared output stays, e.g. a page's URL or a command's first lines. */
+const clearedHeadLength = 300
+
+const isBrowserTool = (name: string): boolean => name.startsWith("browser_")
+
+export const clearedOutput = (name: string, output: string): string => {
+  const head = output.slice(0, clearedHeadLength).trimEnd()
+  const note = isBrowserTool(name)
+    ? `… (${output.length - head.length} more characters cleared to save context; a later browser result shows the page as it is now.)`
+    : `… (${output.length - head.length} more characters cleared to save context; call ${name} again if you need them.)`
+  return `${head}\n${note}`
+}
+
+/**
+ * A reply's prompt with earlier tool outputs cleared, so each round doesn't resend all of them.
+ * The latest round stays whole. Before it, a browser page is cleared once a later browser result
+ * shows the page, and other outputs stay whole newest first until `budget` is used up; every older
+ * one is cleared. A cleared output is too short to clear again, so it stays the same in later
+ * rounds and the start of the prompt keeps matching the provider's prompt cache.
+ */
+export const compactToolResults = (
+  prompt: ReadonlyArray<Prompt.MessageEncoded>,
+  budget: number = toolContextBudget
+): Array<Prompt.MessageEncoded> => {
+  const result = [...prompt]
+  const latest = result.findLastIndex((message) => message.role === "tool")
+  let kept = 0
+  let full = false
+  let laterPage = false
+  for (let index = latest; index >= 0; index--) {
+    const message = result[index]!
+    if (message.role !== "tool") continue
+    const content = [...message.content]
+    let changed = false
+    for (let at = content.length - 1; at >= 0; at--) {
+      const part = content[at]!
+      if (part.type !== "tool-result" || typeof part.result !== "string" || part.result.length <= clearableLength) continue
+      const page = isBrowserTool(part.name) && !part.isFailure
+      if (index !== latest) {
+        const stalePage = page && laterPage
+        if (!stalePage && (full || kept + part.result.length > budget)) full = true
+        if (stalePage || full) {
+          content[at] = { ...part, result: clearedOutput(part.name, part.result) }
+          changed = true
+          continue
+        }
+      }
+      kept += part.result.length
+      if (page) laterPage = true
+    }
+    if (changed) result[index] = { ...message, content }
+  }
+  return result
 }
 
 /** Joins back-to-back turns from the same role; several providers (e.g. deepseek-reasoner) reject them. */

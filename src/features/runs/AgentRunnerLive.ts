@@ -45,7 +45,7 @@ import {
   toolOutputLimit
 } from "./AgentRunner.ts"
 import { Approvals } from "./Approvals.ts"
-import { historyTurns, merged } from "./PromptBuilder.ts"
+import { compactToolResults, historyTurns, merged } from "./PromptBuilder.ts"
 import { RunEvents } from "./RunEvents.ts"
 import { Toolbox } from "./Toolbox.ts"
 
@@ -223,7 +223,7 @@ export const AgentRunnerLive = Layer.effect(
         yield* setActivity(conversationId, "")
 
         const turns = historyTurns(history.filter((m) => m.id !== message.id), bot)
-        const prompt: Array<Prompt.MessageEncoded> = [
+        let prompt: Array<Prompt.MessageEncoded> = [
           { role: "system", content: system },
           ...(options.nudge === undefined ? turns : merged([...turns, { role: "user", content: options.nudge }]))
         ]
@@ -419,6 +419,7 @@ export const AgentRunnerLive = Layer.effect(
             results.push({ type: "tool-result", id: call.id, name: call.name, isFailure, result: output })
           }
           prompt.push({ role: "tool", content: results })
+          prompt = compactToolResults(prompt)
           if (options.endAfterRound?.() === true) {
             endedEarly = true
             break

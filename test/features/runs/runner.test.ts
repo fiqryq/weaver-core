@@ -252,6 +252,30 @@ describe("AgentRunner", () => {
     }).pipe(Effect.provide(testLayer(model.layer)))
   })
 
+  it.live("clears earlier tool output from later rounds' prompts but keeps it in the reply", () => {
+    // Each command prints about 11k characters ending in numbers of its own, e.g. 102499.
+    const command = (round: number) => `seq ${(round + 1) * 100_000} ${(round + 1) * 100_000 + 2500}`
+    const model = scriptedModel((call) =>
+      call.index < 4 ? callTool("run_command", { command: command(call.index) }, `c${call.index}`) : say("Done.")
+    )
+    return Effect.gen(function*() {
+      yield* withProviderKey
+      const bot = yield* createBot({ name: "Ada", tools: ["shell"] })
+      const conversation = yield* createConversation([bot.id])
+      yield* sendAndWait(conversation.id, "Count for me")
+
+      const last = model.calls[4]!.prompt
+      expect(last).not.toContain("102499")
+      expect(last).toContain("cleared to save context")
+      expect(last).toContain("402499")
+      expect(model.calls[3]!.prompt).toContain("102499")
+
+      const message = yield* lastMessage(conversation.id)
+      const outputs = message.parts.flatMap((part) => (part.type === "tool-result" ? [part.output] : []))
+      expect(outputs[0]).toContain("102499")
+    }).pipe(Effect.provide(testLayer(model.layer)))
+  })
+
   it.live("cancelBot stops every run the bot is part of and leaves the others", () => {
     const model = scriptedModel((call) => callTool("run_command", { command: "echo waiting" }, `c${call.index}`))
     return Effect.gen(function*() {
