@@ -5,6 +5,7 @@ import { HttpRouter } from "effect/http"
 import { AppConfig, type AppConfigShape } from "../../../src/config/Config.ts"
 import { BotRepo } from "../../../src/features/bots/BotRepo.ts"
 import { ConversationRepo } from "../../../src/features/conversations/ConversationRepo.ts"
+import { IntegrationOAuth } from "../../../src/features/integrations/IntegrationOAuth.ts"
 import { IntegrationRepo } from "../../../src/features/integrations/IntegrationRepo.ts"
 import { LibraryStore } from "../../../src/features/learning/library/LibraryStore.ts"
 import { SkillSources } from "../../../src/features/learning/library/SkillSources.ts"
@@ -37,7 +38,7 @@ const services = (memory: FakeMemory, model: Layer.Layer<LanguageModelFactory>, 
     Layer.provideMerge(KnowledgeBase.layer),
     Layer.provideMerge(CoreMemory.layer),
     Layer.provideMerge(Layer.mergeAll(LibraryStore.layer, SkillSources.layer)),
-    Layer.provideMerge(SkillStore.layer),
+    Layer.provideMerge(Layer.mergeAll(SkillStore.layer, IntegrationOAuth.layer)),
     Layer.provideMerge(Layer.mergeAll(memory.layer, RunEvents.layer, Approvals.layer, BotUsers.layer, Camofox.layer)),
     Layer.provideMerge(ProviderRegistry.layer),
     Layer.provideMerge(Layer.mergeAll(BotRepo.layer, ConversationRepo.layer, IntegrationRepo.layer, Settings.layer, TeamRepo.layer)),

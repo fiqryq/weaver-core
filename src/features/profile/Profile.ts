@@ -32,6 +32,8 @@ export class Health extends Schema.Class<Health>("Health")({
   memoryApi: Schema.optional(Schema.Boolean),
   /** Teams of bots with a manager, a room and a private chat (`/v1/teams`). */
   teams: Schema.optional(Schema.Boolean),
+  /** Integrations can sign in to hosted MCP servers (`auth: "oauth"`, `/v1/integrations/:id/oauth`). */
+  oauthIntegrations: Schema.optional(Schema.Boolean),
   /** Bytes free for the server on the data folder's filesystem. */
   dataDirFreeBytes: Schema.optional(Schema.Number)
 }) {}

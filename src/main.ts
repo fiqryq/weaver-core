@@ -5,6 +5,7 @@ import { HttpApiBuilder } from "effect/http-api"
 import { AppConfig, version } from "./config/Config.ts"
 import { BotRepo } from "./features/bots/BotRepo.ts"
 import { ConversationRepo } from "./features/conversations/ConversationRepo.ts"
+import { IntegrationOAuth } from "./features/integrations/IntegrationOAuth.ts"
 import { IntegrationRepo } from "./features/integrations/IntegrationRepo.ts"
 import { McpHub } from "./features/integrations/McpHub.ts"
 import { CoreMemory } from "./features/learning/memory/CoreMemory.ts"
@@ -36,7 +37,7 @@ export const AppServices = TeamSessions.layer.pipe(
   Layer.provideMerge(KnowledgeBase.layer),
   Layer.provideMerge(CoreMemory.layer),
   Layer.provideMerge(Layer.mergeAll(LibraryStore.layer, SkillSources.layer)),
-  Layer.provideMerge(SkillStore.layer),
+  Layer.provideMerge(Layer.mergeAll(SkillStore.layer, IntegrationOAuth.layer)),
   Layer.provideMerge(Layer.mergeAll(McpHub.layer, RunEvents.layer, Approvals.layer, BotUsers.layer, Camofox.layer)),
   Layer.provideMerge(ProviderRegistry.layer),
   Layer.provideMerge(Layer.mergeAll(BotRepo.layer, ConversationRepo.layer, IntegrationRepo.layer, Settings.layer, TeamRepo.layer))

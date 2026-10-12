@@ -59,6 +59,7 @@ const SystemHandlers = HttpApiBuilder.group(
           skillsLibrary: true,
           memoryApi: true,
           teams: true,
+          oauthIntegrations: true,
           uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
           ...(dataDirFreeBytes === undefined ? {} : { dataDirFreeBytes })
         })

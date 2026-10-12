@@ -11,7 +11,7 @@ Built with [Bun](https://bun.sh), [Effect 4](https://effect.website) and SQLite.
 - **Work on a real computer.** Each bot gets its own workspace and, on a VPS, its own Linux user. Bots run commands, read and edit files, and ask for your approval before risky steps.
 - **Browse the web.** With [camofox-browser](https://github.com/jo-inc/camofox-browser) (an anti-detection Firefox) or Playwright, on a virtual desktop you can watch live. Without a browser, `web_search` and `web_fetch` still work.
 - **Use any OpenAI-compatible model.** Presets for DeepSeek, OpenAI, Qwen, Kimi, GLM and MiniMax, plus any custom endpoint.
-- **Connect apps over MCP.** Add MCP servers as integrations, and bots get their tools.
+- **Connect apps over MCP.** Add MCP servers as integrations, and bots get their tools. Hosted apps like Notion, Linear or Sentry sign in with OAuth: approve in the browser on your Mac, and the server keeps and refreshes the tokens.
 - **Remember.** With [Basic Memory](https://github.com/basicmachines-co/basic-memory), bots share a knowledge base of Markdown notes, keep a Core Memory note about you, recall related notes before replying, and condense their memory when it grows.
 - **Learn skills.** Bots write `SKILL.md` skills as they work. A shared skills library lets you install skills from GitHub or a catalog, import your own, and choose which bots get each one. Skill scripts are runnable.
 - **Hand off work.** A bot can ask a teammate for help with `ask_bot`. The teammate gets the context, works in its own conversation, and the result is saved to the knowledge base.
@@ -148,13 +148,13 @@ Every route except `/v1/health` needs `Authorization: Bearer <WEAVER_TOKEN>`. Th
 
 | Route | What it's for |
 | --- | --- |
-| `GET /v1/health` | Status, version, uptime, free disk, and which features are on (`memory`, `browser`, `handoffs`, `skillsLibrary`, `teams`) |
+| `GET /v1/health` | Status, version, uptime, free disk, and which features are on (`memory`, `browser`, `handoffs`, `skillsLibrary`, `teams`, `oauthIntegrations`) |
 | `/v1/bots` | Bots, their tools, integrations, teammates and skills (`/v1/bots/:id/skills`) |
 | `/v1/conversations` | Chats and messages; posting a message starts a run. Also `cancel`, `regenerate` and `resume` |
-| `GET /v1/events`, `GET /v1/conversations/:id/events` | Server-sent events: run progress, approvals, and changes to skills and teams |
+| `GET /v1/events`, `GET /v1/conversations/:id/events` | Server-sent events: run progress, approvals, and changes to skills, teams and integration sign-ins |
 | `POST /v1/approvals/:id`, `POST /v1/runs/:id/cancel` | Answer an approval request, stop a run |
 | `/v1/providers` | Model providers and their keys |
-| `/v1/integrations` | MCP integrations |
+| `/v1/integrations` | MCP integrations; for `auth: "oauth"` ones, `POST :id/oauth/start` (answers the URL to open), `POST :id/oauth/finish` (relays `code` and `state`) and `DELETE :id/oauth` to sign out |
 | `/v1/memory` | Basic Memory projects, the knowledge graph, and note history and versions |
 | `/v1/skills` | The shared skills library: `catalog`, `install`, `import`, `promote` and `:name/bots` |
 | `/v1/teams` | Teams, plus `stop` and `resume` |

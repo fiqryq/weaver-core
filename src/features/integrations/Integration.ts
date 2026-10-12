@@ -3,6 +3,13 @@ import { Schema } from "effect"
 export const Transport = Schema.Literals(["stdio", "http"])
 export type Transport = typeof Transport.Type
 
+/** `oauth`: the server signs in to a hosted MCP server for the person (HTTP only). */
+export const IntegrationAuth = Schema.Literals(["none", "oauth"])
+export type IntegrationAuth = typeof IntegrationAuth.Type
+
+export const OAuthStatus = Schema.Literals(["signed-in", "signed-out"])
+export type OAuthStatus = typeof OAuthStatus.Type
+
 /** Env and header values are secrets: the API returns this in their place and keeps the stored value when it's sent back. */
 export const maskedValue = "********"
 
@@ -18,6 +25,10 @@ export class Integration extends Schema.Class<Integration>("Integration")({
   url: Schema.String,
   headers: Schema.Record(Schema.String, Schema.String),
   enabled: Schema.Boolean,
+  auth: IntegrationAuth,
+  /** Null unless `auth` is `oauth`; `signed-in` while tokens are stored. */
+  oauthStatus: Schema.NullOr(OAuthStatus),
+  oauthSignedInAt: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
   updatedAt: Schema.String
 }) {}
@@ -31,7 +42,8 @@ export const IntegrationCreate = Schema.Struct({
   env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   url: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  enabled: Schema.optional(Schema.Boolean)
+  enabled: Schema.optional(Schema.Boolean),
+  auth: Schema.optional(IntegrationAuth)
 })
 export type IntegrationCreate = typeof IntegrationCreate.Type
 
@@ -43,7 +55,8 @@ export const IntegrationUpdate = Schema.Struct({
   env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   url: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  enabled: Schema.optional(Schema.Boolean)
+  enabled: Schema.optional(Schema.Boolean),
+  auth: Schema.optional(IntegrationAuth)
 })
 export type IntegrationUpdate = typeof IntegrationUpdate.Type
 
@@ -57,6 +70,16 @@ export class IntegrationTestResult extends Schema.Class<IntegrationTestResult>("
   tools: Schema.Array(IntegrationTool),
   error: Schema.NullOr(Schema.String)
 }) {}
+
+export const OAuthStartRequest = Schema.Struct({ redirectUri: Schema.String })
+
+export class OAuthStart extends Schema.Class<OAuthStart>("OAuthStart")({
+  /** Null when it's already signed in with working tokens. */
+  authorizationUrl: Schema.NullOr(Schema.String),
+  state: Schema.NullOr(Schema.String)
+}) {}
+
+export const OAuthFinishRequest = Schema.Struct({ code: Schema.String, state: Schema.String })
 
 export class IntegrationNotFound extends Schema.TaggedError<IntegrationNotFound>()("IntegrationNotFound", {
   id: Schema.String

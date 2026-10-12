@@ -7,7 +7,10 @@ import {
   IntegrationCreate,
   IntegrationNotFound,
   IntegrationTestResult,
-  IntegrationUpdate
+  IntegrationUpdate,
+  OAuthFinishRequest,
+  OAuthStart,
+  OAuthStartRequest
 } from "./Integration.ts"
 
 const IdParams = { id: Schema.String }
@@ -32,7 +35,24 @@ export class IntegrationsApi extends HttpApiGroup.make("integrations")
       success: IntegrationTestResult,
       error: IntegrationNotFound
     }),
-    HttpApiEndpoint.post("testConfig", "/test", { payload: IntegrationCreate, success: IntegrationTestResult })
+    HttpApiEndpoint.post("testConfig", "/test", { payload: IntegrationCreate, success: IntegrationTestResult }),
+    HttpApiEndpoint.post("oauthStart", "/:id/oauth/start", {
+      params: IdParams,
+      payload: OAuthStartRequest,
+      success: OAuthStart,
+      error: [IntegrationNotFound, BadRequest]
+    }),
+    HttpApiEndpoint.post("oauthFinish", "/:id/oauth/finish", {
+      params: IdParams,
+      payload: OAuthFinishRequest,
+      success: IntegrationTestResult,
+      error: [IntegrationNotFound, BadRequest]
+    }),
+    HttpApiEndpoint.delete("oauthSignOut", "/:id/oauth", {
+      params: IdParams,
+      success: HttpApiSchema.NoContent,
+      error: [IntegrationNotFound, BadRequest]
+    })
   )
   .middleware(Authorization)
   .prefix("/v1/integrations")

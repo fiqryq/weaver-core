@@ -23,7 +23,7 @@ import { webTools } from "../../tools/builtin/Web.ts"
 import { sessionSearchTool } from "../../tools/learning/SessionSearch.ts"
 import { skillTools } from "../../tools/learning/Skills.ts"
 import type { Bot } from "../bots/Bot.ts"
-import { toMcpConfig } from "../integrations/integrationConfig.ts"
+import { IntegrationOAuth, signInAgainMessage } from "../integrations/IntegrationOAuth.ts"
 import { IntegrationRepo } from "../integrations/IntegrationRepo.ts"
 import { McpHub, type McpServerConfig } from "../integrations/McpHub.ts"
 import { LibraryStore } from "../learning/library/LibraryStore.ts"
@@ -68,6 +68,7 @@ export class Toolbox extends Context.Service<Toolbox, {
       const config = yield* AppConfig
       const hub = yield* McpHub
       const integrations = yield* IntegrationRepo
+      const oauth = yield* IntegrationOAuth
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
       const skillStore = yield* SkillStore
       const library = yield* LibraryStore
@@ -217,7 +218,11 @@ export class Toolbox extends Context.Service<Toolbox, {
             let prefix = slugify(integration.name)
             for (let n = 2; usedPrefixes.has(prefix); n++) prefix = `${slugify(integration.name)}${n}`
             usedPrefixes.add(prefix)
-            const server = toMcpConfig(integration)
+            if (integration.auth === "oauth" && integration.oauthStatus !== "signed-in") {
+              unavailable.push(`${integration.name} (${signInAgainMessage(integration.name)})`)
+              continue
+            }
+            const server = oauth.config(integration)
             const listed = yield* Effect.result(hub.tools(server))
             if (listed._tag === "Failure") {
               unavailable.push(`${integration.name} (${listed.failure.message})`)

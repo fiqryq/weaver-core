@@ -1,7 +1,8 @@
+import { type OAuthClientProvider, UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
+import { SSEClientTransport, SseError } from "@modelcontextprotocol/sdk/client/sse.js"
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import { ErrorCode, McpError as ProtocolError } from "@modelcontextprotocol/sdk/types.js"
 import { Context, Duration, Effect, Layer, RcMap, Schema, type Scope } from "effect"
@@ -20,6 +21,16 @@ export interface McpServerConfig {
   readonly url: string
   readonly headers: Readonly<Record<string, string>>
   readonly cwd?: string
+  /** Signs HTTP requests in with OAuth and refreshes the tokens. */
+  readonly authProvider?: McpAuthProvider
+}
+
+/** The person has to sign in (again) before the server can be used; the message says how. */
+export class SignInRequired extends Error {}
+
+export interface McpAuthProvider extends OAuthClientProvider {
+  /** Records that the stored sign-in no longer works, answering the error to report. */
+  signInRequired(): Promise<SignInRequired>
 }
 
 export interface McpTool {
@@ -73,11 +84,33 @@ const makeTransport = (config: McpServerConfig, legacySse: boolean): Transport =
     })
   }
   const url = new URL(config.url)
-  const requestInit = { headers: { ...config.headers } }
+  const options = {
+    requestInit: { headers: { ...config.headers } },
+    ...(config.authProvider !== undefined ? { authProvider: config.authProvider } : {})
+  }
   return legacySse
-    ? new SSEClientTransport(url, { requestInit })
-    : new StreamableHTTPClientTransport(url, { requestInit }) as Transport
+    ? new SSEClientTransport(url, options)
+    : new StreamableHTTPClientTransport(url, options) as Transport
 }
+
+/** The server turned the stored sign-in down, e.g. a 401 right after refreshing the token. */
+const isAuthFailure = (cause: unknown): boolean =>
+  cause instanceof SignInRequired ||
+  cause instanceof UnauthorizedError ||
+  ((cause instanceof StreamableHTTPError || cause instanceof SseError) && cause.code === 401)
+
+/** What to report for a failure; sign-in problems say how to sign in instead of how the request failed. */
+const failureMessage = (config: McpServerConfig, cause: unknown, describe: (cause: unknown) => string) => {
+  if (cause instanceof SignInRequired) return Effect.succeed(cause.message)
+  const provider = config.authProvider
+  if (provider !== undefined && isAuthFailure(cause)) {
+    return Effect.promise(() => provider.signInRequired().then((error) => error.message, () => describe(cause)))
+  }
+  return Effect.succeed(describe(cause))
+}
+
+const failWith = (config: McpServerConfig, describe: (cause: unknown) => string) => (cause: unknown) =>
+  Effect.flatMap(failureMessage(config, cause, describe), (message) => Effect.fail(new McpError({ server: config.name, message })))
 
 /** Connects once; a client that doesn't finish connecting, including on timeout, is closed again. */
 const open = (config: McpServerConfig, legacySse: boolean): Effect.Effect<Client, unknown> =>
@@ -95,8 +128,10 @@ const open = (config: McpServerConfig, legacySse: boolean): Effect.Effect<Client
 const connect = (config: McpServerConfig): Effect.Effect<Client, McpError> =>
   open(config, false).pipe(
     // Older HTTP servers only speak the SSE transport.
-    Effect.catch((error) => config.transport === "http" ? open(config, true) : Effect.fail(error)),
-    Effect.mapError((cause) => new McpError({ server: config.name, message: `Couldn't connect: ${errorMessage(cause)}` })),
+    Effect.catch((error) =>
+      config.transport === "http" && !isAuthFailure(error) ? open(config, true) : Effect.fail(error)
+    ),
+    Effect.catch(failWith(config, (cause) => `Couldn't connect: ${errorMessage(cause)}`)),
     Effect.timeoutOrElse({
       duration: Duration.seconds(90),
       orElse: () => Effect.fail(new McpError({ server: config.name, message: "Timed out connecting." }))
@@ -243,10 +278,7 @@ export class McpHub extends Context.Service<McpHub, {
             Effect.flatMap((connection) =>
               use(connection).pipe(
                 Effect.catch((cause) =>
-                  Effect.andThen(
-                    afterFailure(config, connection, cause),
-                    Effect.fail(new McpError({ server: config.name, message: describe(cause) }))
-                  )
+                  Effect.andThen(afterFailure(config, connection, cause), failWith(config, describe)(cause))
                 )
               )
             ),
@@ -299,10 +331,7 @@ export class McpHub extends Context.Service<McpHub, {
         Effect.acquireUseRelease(
           connect(config),
           (client) =>
-            Effect.mapError(
-              listTools(client),
-              (cause) => new McpError({ server: config.name, message: `Couldn't list tools: ${errorMessage(cause)}` })
-            ),
+            Effect.catch(listTools(client), failWith(config, (cause) => `Couldn't list tools: ${errorMessage(cause)}`)),
           closeClient
         ).pipe(
           Effect.map((listed) =>

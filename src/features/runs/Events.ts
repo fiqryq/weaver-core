@@ -83,6 +83,11 @@ export const RunEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("team-changed"),
     teamId: Schema.String
+  }),
+  /** An integration signed in, signed out, or needs the person to sign in again. */
+  Schema.Struct({
+    type: Schema.Literal("integration-changed"),
+    integrationId: Schema.String
   })
 ])
 export type RunEvent = typeof RunEvent.Type
