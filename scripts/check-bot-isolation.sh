@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks, on a VPS set up with weaver-vps-setup.sh, that bot commands can use their workspaces but can't
+# Checks, on a VPS set up with install.sh, that bot commands can use their workspaces but can't
 # reach the agent server's secrets or skills, other bots' files, the browser service's logins and key,
 # the local services' ports, or the virtual desktop (screenshots, keystrokes, window lists), which only
 # the desktop's own programs and the browser may connect to.

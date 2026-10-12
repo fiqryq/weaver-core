@@ -38,16 +38,23 @@ sudo mkswap /swapfile && sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
-### With the Mac app (recommended)
+### One command
 
 1. Install Tailscale on your Mac and sign in.
-2. In Weaver, click **Copy Setup Command** (on the first-run screen, or in **Settings › Computer**).
-3. SSH into your VPS, paste the command and press Return.
-4. Open the Tailscale link it prints and sign in with the same account.
-5. Click the `weaver://connect` link it prints at the end. It fills in the server address, token, desktop, stats and memory settings in the app.
-6. Add a model provider key in **Settings › Models**. The key is stored on the VPS.
+2. SSH into your VPS and run:
 
-The setup command installs:
+   ```sh
+   curl -fsSL https://github.com/fiqryq/weaver-core/releases/download/server-latest/install.sh | bash
+   ```
+
+   The same command is behind **Copy Setup Command** in Weaver (on the first-run screen, or in **Settings › Computer**). As a user other than root, it asks for your password and reruns itself with sudo.
+3. Open the Tailscale link it prints and sign in with the same account as your Mac.
+4. Click the `weaver://connect` link it prints at the end. It fills in the server address, token, desktop, stats and memory settings in Weaver.
+5. Add a model provider key in **Settings › Models**. The key is stored on the VPS.
+
+If the VPS doesn't have curl yet, install it first with `apt-get install -y curl`.
+
+The script installs:
 
 - this server as the `weaver-agent` systemd service, checked against the release's `SHA256SUMS`;
 - Tailscale and a firewall (ufw) that only allows SSH and Tailscale;
@@ -56,11 +63,28 @@ The setup command installs:
 - Basic Memory;
 - `weaver-update`, nightly backups and `weaver-firewall`.
 
-Running it again is safe: it keeps your token and data and updates everything. Set options before the command, for example `SKIP_BROWSER=1` (no browser, saves about 1.4 GB of disk) or `SKIP_MEMORY=1` (no Basic Memory, saves about 0.5 GB of memory).
+Running it again is safe: it keeps your token and data and updates everything. Options go before `bash`:
 
-### Without the Mac app
+```sh
+curl -fsSL https://github.com/fiqryq/weaver-core/releases/download/server-latest/install.sh | SKIP_BROWSER=1 bash
+```
 
-You can run the server on its own and use the API directly. This skips the browser, memory, bot users and firewall that the setup command adds.
+| Option | What it does |
+| --- | --- |
+| `TS_AUTHKEY=tskey-…` | Joins Tailscale with an auth key, without the login link |
+| `SKIP_BROWSER=1` | No browser (saves about 1.4 GB of disk) |
+| `SKIP_MEMORY=1` | No Basic Memory (saves about 0.5 GB of memory) |
+| `SKIP_FIREWALL=1` | Leaves ufw alone |
+| `BROWSER_ENGINE=playwright` | Chromium through Playwright MCP instead of Camoufox |
+| `MEMORY_TOKEN=generate` | Puts Basic Memory behind a bearer token |
+| `SCREEN_SIZE=1440x900` | Virtual desktop size (default `1280x800`) |
+| `WEAVER_SERVER_BINARY=/path` | Installs a server binary you built instead of downloading one |
+
+The full list is at the top of [`scripts/install.sh`](scripts/install.sh).
+
+### Only the server
+
+You can run the server on its own and use the API directly. This skips the browser, memory, bot users and firewall that `install.sh` adds.
 
 ```sh
 ARCH=$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/')
@@ -221,15 +245,16 @@ deploy/test/              systemd test harness for the setup script
 
 | Script | What it does |
 | --- | --- |
+| `scripts/install.sh` | Sets up a VPS for Weaver (see [Install on your VPS](#install-on-your-vps)). Published with each release |
 | `scripts/weaver-bot-user` | `ensure <bot id>` / `remove <bot id>`: creates or deletes a bot's Linux user (`wb-…`) and fixes its home and workspace. Installed as root's `/usr/local/lib/weaver/weaver-bot-user`; the server runs it through `sudo` |
 | `scripts/weaver-update` | Updates the installed server from a release, checked against `SHA256SUMS`, and rolls back if `/v1/health` doesn't answer within 30 seconds. Installed as `/usr/local/bin/weaver-update` |
 | `scripts/check-bot-isolation.sh` | Run as root on a VPS to check bots' users can't reach the server's data, each other's files or the local services' ports |
 
 ## Releases
 
-`.github/workflows/release.yml` runs the type check, the tests and shellcheck on every pull request and push. Pushes to `main` build `weaver-server-linux-x64` and `weaver-server-linux-arm64` and refresh the rolling [`server-latest`](https://github.com/fiqryq/weaver-core/releases/tag/server-latest) prerelease with them, `weaver-bot-user`, `weaver-update` and `SHA256SUMS`. Tags named `v*` or `server-v*` get a versioned release with the same files.
+`.github/workflows/release.yml` runs the type check, the tests and shellcheck on every pull request and push. Pushes to `main` build `weaver-server-linux-x64` and `weaver-server-linux-arm64` and refresh the rolling [`server-latest`](https://github.com/fiqryq/weaver-core/releases/tag/server-latest) prerelease with them, `install.sh`, `weaver-bot-user`, `weaver-update` and `SHA256SUMS`. Tags named `v*` or `server-v*` get a versioned release with the same files.
 
-To test the setup script on a real systemd (needs Docker and Bun):
+To test `install.sh` on a real systemd (needs Docker and Bun):
 
 ```sh
 SKIP_MEMORY=1 ./deploy/test/run.sh

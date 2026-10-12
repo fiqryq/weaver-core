@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Updates the Weaver agent server on a VPS set up with weaver-vps-setup.sh. Run as root:
+# Updates the Weaver agent server on a VPS set up with install.sh. Run as root:
 #
 #   sudo weaver-update                 install the latest build (the rolling server-latest release)
 #   sudo weaver-update v0.2.0          install a tagged release instead
@@ -45,7 +45,7 @@ TAG="${TAG:-server-latest}"
 [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || die "WEAVER_UPDATE_TIMEOUT must be a number of seconds"
 
 [ "$(id -u)" -eq 0 ] || die "run this as root, for example: sudo weaver-update"
-[ -x "$SERVER_BIN" ] || die "$SERVER_BIN isn't installed; run weaver-vps-setup.sh first"
+[ -x "$SERVER_BIN" ] || die "$SERVER_BIN isn't installed; run install.sh first"
 case "$(uname -m)" in
   x86_64 | amd64) ARCH=x64 ;;
   aarch64 | arm64) ARCH=arm64 ;;

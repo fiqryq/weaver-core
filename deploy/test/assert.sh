@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks a machine set up by weaver-vps-setup.sh in SKIP_TAILSCALE test mode. Run as root inside the
+# Checks a machine set up by install.sh in SKIP_TAILSCALE test mode. Run as root inside the
 # harness container by run.sh: assert.sh <round>. Also leaves fake releases in /srv/fake-releases
 # (server-latest, tampered, broken) for weaver-update and the setup script's next run.
 # shellcheck disable=SC2016,SC2329 # "$1" in bash -c is meant for the inner shell; checks run via check/refuse.

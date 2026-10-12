@@ -1,4 +1,4 @@
-# A fresh Debian VPS with systemd as PID 1, for testing weaver-vps-setup.sh. Started by run.sh.
+# A fresh Debian VPS with systemd as PID 1, for testing install.sh. Started by run.sh.
 FROM debian:bookworm
 
 ENV container=docker

@@ -1,9 +1,10 @@
 name: Release
 
 # Tests the agent server on every pull request and push. Pushes to main refresh the rolling
-# `server-latest` prerelease that weaver-vps-setup.sh and weaver-update download; tags named `v*` or
-# `server-v*` get a versioned release. Each release has the Linux binaries, the helper scripts the
-# VPS installs (weaver-bot-user, weaver-update) and SHA256SUMS covering all of them.
+# `server-latest` prerelease that install.sh and weaver-update download; tags named `v*` or
+# `server-v*` get a versioned release. Each release has the Linux binaries, the setup script
+# (install.sh), the helper scripts the VPS installs (weaver-bot-user, weaver-update) and SHA256SUMS
+# covering all of them.
 on:
   push:
     branches: [main]
@@ -61,9 +62,9 @@ jobs:
       - name: Collect release files
         run: |
           mkdir release
-          cp dist/weaver-server-linux-x64 dist/weaver-server-linux-arm64 scripts/weaver-bot-user scripts/weaver-update release/
+          cp dist/weaver-server-linux-x64 dist/weaver-server-linux-arm64 scripts/install.sh scripts/weaver-bot-user scripts/weaver-update release/
           chmod 755 release/*
-          cd release && sha256sum weaver-server-linux-x64 weaver-server-linux-arm64 weaver-bot-user weaver-update > SHA256SUMS
+          cd release && sha256sum weaver-server-linux-x64 weaver-server-linux-arm64 install.sh weaver-bot-user weaver-update > SHA256SUMS
           cat SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
@@ -95,7 +96,7 @@ jobs:
           else
             gh api -X POST "repos/$GH_REPO/git/refs" -f ref=refs/tags/server-latest -f sha="$GITHUB_SHA" >/dev/null
           fi
-          notes="Built from main at $GITHUB_SHA. weaver-vps-setup.sh and weaver-update install this."
+          notes="Built from main at $GITHUB_SHA. Install on a VPS with: curl -fsSL https://github.com/$GH_REPO/releases/download/server-latest/install.sh | bash"
           if gh release view server-latest >/dev/null 2>&1; then
             gh release edit server-latest --prerelease --notes "$notes"
           else
@@ -103,7 +104,7 @@ jobs:
           fi
           # SHA256SUMS goes last; the setup script retries if it catches the files mid-upload.
           gh release upload server-latest --clobber \
-            release/weaver-server-linux-x64 release/weaver-server-linux-arm64 release/weaver-bot-user release/weaver-update
+            release/weaver-server-linux-x64 release/weaver-server-linux-arm64 release/install.sh release/weaver-bot-user release/weaver-update
           gh release upload server-latest --clobber release/SHA256SUMS
       - name: Versioned release
         if: startsWith(github.ref, 'refs/tags/')
@@ -113,5 +114,5 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --verify-tag --title "Agent server $version" --generate-notes
           fi
           gh release upload "$GITHUB_REF_NAME" --clobber \
-            release/weaver-server-linux-x64 release/weaver-server-linux-arm64 release/weaver-bot-user release/weaver-update
+            release/weaver-server-linux-x64 release/weaver-server-linux-arm64 release/install.sh release/weaver-bot-user release/weaver-update
           gh release upload "$GITHUB_REF_NAME" --clobber release/SHA256SUMS

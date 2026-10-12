@@ -12,7 +12,7 @@
 # shared weaver-bot user and everyone else get nothing. Needs setfacl (the acl package); without it the
 # ACLs are skipped with a warning. On remove, whatever is left of the workspace goes back to the server's
 # user and loses the bot user's ACL entries, so a later user that gets the same uid can't open it.
-# Installed by weaver-vps-setup.sh as /usr/local/lib/weaver/weaver-bot-user.
+# Installed by install.sh as /usr/local/lib/weaver/weaver-bot-user.
 set -euo pipefail
 umask 077
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -42,9 +42,9 @@ BOT_DIR="$BOTS_DIR/$BOT_ID"
 BOT_HOME="$BOT_DIR/home"
 
 for group in "$WORK_GROUP" "$BOTS_GROUP"; do
-  getent group "$group" >/dev/null || die "the $group group is missing; rerun weaver-vps-setup.sh"
+  getent group "$group" >/dev/null || die "the $group group is missing; rerun install.sh"
 done
-id "$SERVICE_USER" >/dev/null 2>&1 || die "the $SERVICE_USER user is missing; rerun weaver-vps-setup.sh"
+id "$SERVICE_USER" >/dev/null 2>&1 || die "the $SERVICE_USER user is missing; rerun install.sh"
 
 # One change at a time, so two calls for the same bot can't both try to create its user.
 exec 9>"$LOCK_FILE"

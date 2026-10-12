@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests weaver-vps-setup.sh on a real systemd: builds the Linux agent server, starts a Debian container
+# Tests install.sh on a real systemd: builds the Linux agent server, starts a Debian container
 # with systemd as PID 1, runs the setup script in its test mode (no Tailscale), checks the result with
 # assert.sh, then runs the setup script again (downloading from a local fake release this time) and
 # checks everything once more. Finally a run against a tampered release has to fail without changes.
@@ -12,12 +12,12 @@
 #                   the checks open a page in the browser service and look for its window on the desktop
 #   KEEP=1          leave the container running afterwards (docker exec -it weaver-systemd-test bash)
 #   TEST_SUBNET=…   the subnet of the container's own Docker network (default 172.31.77.0/24)
-#   SETUP_SCRIPT=…  the setup script to test (default ../weaver-mac/weaver/Resources/weaver-vps-setup.sh)
+#   SETUP_SCRIPT=…  the setup script to test (default scripts/install.sh)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CORE="$(cd "$HERE/../.." && pwd)"
-SETUP_SCRIPT="${SETUP_SCRIPT:-$CORE/../weaver-mac/weaver/Resources/weaver-vps-setup.sh}"
+SETUP_SCRIPT="${SETUP_SCRIPT:-$CORE/scripts/install.sh}"
 NAME="${CONTAINER_NAME:-weaver-systemd-test}"
 IMAGE=weaver-systemd-test
 # The container keeps one address across the reboot round, since the setup script pins the agent server to it.
@@ -79,7 +79,7 @@ docker cp "$CORE/scripts/weaver-bot-user" "$NAME:/root/weaver-test/helpers/weave
 docker cp "$CORE/scripts/weaver-update" "$NAME:/root/weaver-test/helpers/weaver-update"
 docker cp "$CORE/scripts/check-bot-isolation.sh" "$NAME:/root/weaver-test/check-bot-isolation.sh"
 docker cp "$HERE/assert.sh" "$NAME:/root/weaver-test/assert.sh"
-docker cp "$SETUP_SCRIPT" "$NAME:/root/weaver-test/weaver-vps-setup.sh"
+docker cp "$SETUP_SCRIPT" "$NAME:/root/weaver-test/install.sh"
 
 COMMON_ENV=(-e SKIP_TAILSCALE=1 -e "LISTEN_IP=$LISTEN_IP")
 [ -z "${SKIP_MEMORY:-}" ] || COMMON_ENV+=(-e SKIP_MEMORY=1)
@@ -89,7 +89,7 @@ COMMON_ENV=(-e SKIP_TAILSCALE=1 -e "LISTEN_IP=$LISTEN_IP")
 setup() {
   local log="$LOGS/$1.log" started=$SECONDS
   shift
-  if docker exec "${COMMON_ENV[@]}" "$@" "$NAME" bash /root/weaver-test/weaver-vps-setup.sh >"$log" 2>&1; then
+  if docker exec "${COMMON_ENV[@]}" "$@" "$NAME" bash /root/weaver-test/install.sh >"$log" 2>&1; then
     echo "setup finished in $((SECONDS - started))s"
   else
     echo "setup failed after $((SECONDS - started))s; last lines of $log:" >&2
