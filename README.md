@@ -71,7 +71,7 @@ Good to know:
 - Tailscale, plus a firewall (ufw) that only allows SSH and Tailscale
 - A separate Linux user for each bot
 - Camoufox, a virtual desktop (Xvfb and noVNC), Glances for machine stats, and Basic Memory
-- `weaver-update`, nightly backups and `weaver-firewall`
+- `weaver-update` (and one-click updates from the app), `weaver-backup`, `weaver-restore`, nightly backups and `weaver-firewall`
 
 ### Installer options
 
@@ -109,7 +109,9 @@ sudo weaver-update v0.2.0     # a tagged release
 sudo weaver-update --force    # reinstall even if the binary hasn't changed
 ```
 
-It checks the download against `SHA256SUMS` and rolls back if `/v1/health` doesn't answer within 30 seconds.
+It checks the download against `SHA256SUMS` and rolls back if `/v1/health` doesn't answer within 30 seconds. It also refreshes `weaver-bot-user`, `weaver-backup`, `weaver-restore` and itself.
+
+**One-click updates.** The Weaver app can install updates too (`GET`/`POST /v1/update`). The server runs unprivileged, so it only writes the release tag to `/var/lib/weaver-update/request`. A root `weaver-update.path` unit notices and starts `weaver-update-request.service`, which runs `weaver-update --from-request` and writes progress to `/var/lib/weaver-update/status.json`. `install.sh` sets this up. On a VPS set up before one-click updates existed, run `sudo weaver-update` until the app stops asking (the first run may only bring in the new `weaver-update`).
 
 ### Troubleshooting
 
@@ -181,7 +183,9 @@ Every route except `/v1/health` needs `Authorization: Bearer <WEAVER_TOKEN>`. Th
 
 | Route | What it's for |
 | --- | --- |
-| `GET /v1/health` | Status, version, uptime, free disk, and which features are on (`memory`, `browser`, `handoffs`, `skillsLibrary`, `teams`, `oauthIntegrations`) |
+| `GET /v1/health` | Status, version, build `commit` and `builtAt`, uptime, free disk, and which features are on (`memory`, `browser`, `handoffs`, `skillsLibrary`, `teams`, `oauthIntegrations`, `updates`) |
+| `GET /v1/update?channel=stable\|latest&refresh=1` | The channel's newest release against this build (cached for an hour; `refresh=1` checks again), whether one-click updates are `supported`, and the updater's `status` |
+| `POST /v1/update` | `{ "channel", "tag"? }`: asks the root-side updater to install the channel's newest release (or `tag`). `202`, or `409` while an update runs, `503` when the updater isn't installed, `404` when there's nothing newer |
 | `/v1/bots` | Bots, their tools, integrations, teammates and skills (`/v1/bots/:id/skills`) |
 | `/v1/conversations` | Chats and messages. Posting a message starts a run. Also `cancel`, `regenerate` and `resume` |
 | `GET /v1/events`, `GET /v1/conversations/:id/events` | Server-sent events: run progress, approvals, and changes to skills, teams and integration sign-ins |
@@ -270,6 +274,14 @@ Set these as environment variables. On a VPS they live in `/etc/weaver/agent.env
 | `WEAVER_BOT_USER` | empty | Runs bots' shell commands through `sudo -n`. `per-bot` (what the VPS uses) gives each bot its own user from `/usr/local/lib/weaver/weaver-bot-user`. A user name runs every bot as that user. Empty runs them as the server's user |
 | `WEAVER_BOT_GROUP` | `weaver-work` | Group shared by the server and bots' users. Workspaces get it (mode `2770`) |
 
+### Updates
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `WEAVER_UPDATE_URL` | `https://github.com/fiqryq/weaver-core/releases/download` | Where releases are read from, as `<url>/<tag>/<file>`. `weaver-update` reads it from `/etc/weaver/agent.env` too |
+| `WEAVER_UPDATE_REPO` | `fiqryq/weaver-core` | GitHub repository whose newest release is the `stable` channel (`latest` is the `server-latest` build) |
+| `WEAVER_UPDATE_DIR` | `/var/lib/weaver-update` | Folder shared with the root-side updater: the server writes `request` and reads `status.json` |
+
 ## Data
 
 Everything lives inside `WEAVER_DATA_DIR`:
@@ -306,6 +318,7 @@ src/
     learning/             bot skills, the shared library (/v1/skills), Core Memory and self-review
     memory/               Basic Memory projects, the knowledge graph and note history (/v1/memory)
     teams/                teams (/v1/teams), their rooms and the sessions their managers lead
+    updates/              the server's own updates (/v1/update) through the root-side updater
   tools/                  AgentTool, builtin/ (shell, files, memory, MCP, browser, web, ask_bot, team tools)
                           and learning/ (skills, session search)
 test/                     Vitest suites mirroring src/, with shared layers and fixtures in support/
@@ -318,7 +331,8 @@ deploy/test/              systemd test harness for the setup script
 | --- | --- |
 | `scripts/install.sh` | Sets up a VPS for Weaver (see [Install on your VPS](#install-on-your-vps)). Published with each release |
 | `scripts/weaver-bot-user` | `ensure <bot id>` / `remove <bot id>`: creates or deletes a bot's Linux user (`wb-…`) and fixes its home and workspace. Installed as root's `/usr/local/lib/weaver/weaver-bot-user`; the server runs it through `sudo` |
-| `scripts/weaver-update` | Updates the installed server from a release, checked against `SHA256SUMS`, and rolls back if `/v1/health` doesn't answer within 30 seconds. Installed as `/usr/local/bin/weaver-update` |
+| `scripts/weaver-update` | Updates the installed server from a release, checked against `SHA256SUMS`, and rolls back if `/v1/health` doesn't answer within 30 seconds. Also sets up and runs one-click updates (`--install-updater`, `--from-request`, `--status-file`). Installed as `/usr/local/bin/weaver-update` |
+| `scripts/weaver-backup`, `scripts/weaver-restore` | Back up everything Weaver needs into one file, and put such a backup back. Installed in `/usr/local/bin` |
 | `scripts/check-bot-isolation.sh` | Run as root on a VPS to check bots' users can't reach the server's data, each other's files or the local services' ports |
 
 ## Releases
@@ -326,7 +340,7 @@ deploy/test/              systemd test harness for the setup script
 `.github/workflows/release.yml` does three things:
 
 1. On every pull request and push: runs the type check, the tests and shellcheck.
-2. On pushes to `main`: builds `weaver-server-linux-x64` and `weaver-server-linux-arm64`, and refreshes the rolling [`server-latest`](https://github.com/fiqryq/weaver-core/releases/tag/server-latest) prerelease with them, `install.sh`, `weaver-bot-user`, `weaver-update` and `SHA256SUMS`.
+2. On pushes to `main`: builds `weaver-server-linux-x64` and `weaver-server-linux-arm64`, and refreshes the rolling [`server-latest`](https://github.com/fiqryq/weaver-core/releases/tag/server-latest) prerelease with them, `install.sh`, `weaver-bot-user`, `weaver-update`, `weaver-backup`, `weaver-restore`, `release.json` (version, commit, tag, date and notes, which servers read to offer updates) and `SHA256SUMS`. The binaries report their version (from a `server-v1.2.3` or `v1.2.3` tag, else `package.json`), commit and build time on `/v1/health`; `bun run build` (`build.ts`) stamps them.
 3. On tags named `v*` or `server-v*`: makes a versioned release with the same files.
 
 ### Testing `install.sh`
@@ -341,6 +355,6 @@ What it does:
 
 1. Builds the Linux binary for Docker's architecture.
 2. Runs the setup script twice in a Debian container with systemd as PID 1 (in its `SKIP_TAILSCALE=1` test mode), then reboots it.
-3. Each time, checks the services, the API, bot isolation, the firewall, backups and `weaver-update`, including a rollback.
+3. Each time, checks the services, the API, bot isolation, the firewall, backups and `weaver-update`, including a rollback, and one-click updates through `POST /v1/update`.
 
 Leave out `SKIP_MEMORY=1` to install Basic Memory too. It needs about 2 GB more disk.
