@@ -21,6 +21,8 @@ export interface AppConfigShape {
   readonly token: Redacted.Redacted<string>
   readonly host: string
   readonly port: number
+  /** Maximum request body size in bytes (default 10MB) */
+  readonly maxBodyBytes: number
   readonly display: string
   /** Basic Memory's MCP endpoint, shared by every bot with memory on. */
   readonly memory: Option.Option<{
@@ -83,6 +85,7 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigShape>()("wea
         })
       }
       const listen = yield* Config.String("WEAVER_LISTEN").pipe(Config.withDefault(":7700"))
+      const maxBodyBytes = yield* Config.Int("WEAVER_MAX_BODY_MB").pipe(Config.withDefault(10))
       const display = yield* Config.String("DISPLAY").pipe(Config.withDefault(":1"))
       const memoryUrl = yield* Config.option(Config.String("WEAVER_MEMORY_URL"))
       const memoryToken = yield* Config.String("WEAVER_MEMORY_TOKEN").pipe(Config.withDefault(""))
@@ -120,6 +123,7 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigShape>()("wea
         token,
         host,
         port,
+        maxBodyBytes: Math.max(maxBodyBytes, 1) * 1024 * 1024,
         display,
         memory: Option.map(
           Option.filter(memoryUrl, (url) => url.trim().length > 0),
@@ -156,6 +160,7 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigShape>()("wea
         token: Redacted.make("test-token"),
         host: "127.0.0.1",
         port: 0,
+        maxBodyBytes: 10 * 1024 * 1024,
         display: ":1",
         memory: Option.none(),
         memoryRecall: true,
