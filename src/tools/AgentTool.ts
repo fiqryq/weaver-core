@@ -16,12 +16,25 @@ export interface AgentTool {
   readonly activity: string
   /** Human summary of a call, e.g. "Ran `ls -la`". */
   title(params: unknown): string
+  /**
+   * Checks a call before the person is asked to approve it, so they aren't asked about one that can't
+   * run; a failure is the call's result. `run` still has to check, since things change while waiting.
+   */
+  validate?(params: unknown): Effect.Effect<void, ToolFailure>
   run(params: unknown): Effect.Effect<string, ToolFailure>
 }
 
 /** Runs a call, reporting a crash inside the tool as a failed call instead of failing the whole reply. */
 export const runTool = (tool: AgentTool, params: unknown): Effect.Effect<string, ToolFailure> =>
   tool.run(params).pipe(
+    Effect.catchDefect((defect) =>
+      Effect.fail(new ToolFailure({ message: `${tool.name} failed unexpectedly: ${defect instanceof Error ? defect.message : String(defect)}` }))
+    )
+  )
+
+/** Checks a call with the tool's `validate`, reporting a crash there as a failed check. */
+export const validateCall = (tool: AgentTool, params: unknown): Effect.Effect<void, ToolFailure> =>
+  tool.validate === undefined ? Effect.void : tool.validate(params).pipe(
     Effect.catchDefect((defect) =>
       Effect.fail(new ToolFailure({ message: `${tool.name} failed unexpectedly: ${defect instanceof Error ? defect.message : String(defect)}` }))
     )

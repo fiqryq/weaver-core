@@ -17,7 +17,7 @@ import { AiError, LanguageModel, type Prompt, type Response, Tool } from "effect
 import { AppConfig } from "../../config/Config.ts"
 import { newId } from "../../platform/lib/util.ts"
 import { truncate } from "../../platform/lib/util.ts"
-import { type AgentTool, runTool, ToolFailure } from "../../tools/AgentTool.ts"
+import { type AgentTool, runTool, ToolFailure, validateCall } from "../../tools/AgentTool.ts"
 import { askBotTool, handoffNote, handoffTitle, requestText } from "../../tools/builtin/AskBot.ts"
 import { botMemoryProject, memoryServerConfig, noteWriteError, pinProject } from "../../tools/builtin/Memory.ts"
 import type { Bot } from "../bots/Bot.ts"
@@ -193,6 +193,7 @@ export const AgentRunnerLive = Layer.effect(
         const asked = history.findLast((m) => m.role === "user")
         const fromToolbox = yield* toolbox.forBot(bot, {
           conversationId,
+          conversationKind: conversation.kind,
           recallQuery: asked === undefined ? undefined : recallQuery(messageText(asked.parts))
         })
         // One hop: a teammate answering a handoff can't hand off again.
@@ -339,7 +340,10 @@ export const AgentRunnerLive = Layer.effect(
 
           for (const call of calls) {
             const tool = call.invalid === undefined ? byName.get(call.name) : undefined
-            const needsApproval = tool?.needsApproval === true
+            // A call that fails its check isn't put to the person.
+            const checked = tool === undefined ? undefined : yield* Effect.result(validateCall(tool, call.params))
+            const rejected = checked?._tag === "Failure" ? checked.failure.message : undefined
+            const needsApproval = tool?.needsApproval === true && rejected === undefined
             const approvalId = needsApproval ? newId() : undefined
             const callPart: ToolCallPart = {
               type: "tool-call",
@@ -390,6 +394,9 @@ export const AgentRunnerLive = Layer.effect(
               isFailure = true
             } else if (tool === undefined) {
               output = `There is no tool called ${call.name}.`
+              isFailure = true
+            } else if (rejected !== undefined) {
+              output = rejected
               isFailure = true
             } else if (!approved) {
               output = "The user denied this action. Don't retry it; ask what they'd like instead."

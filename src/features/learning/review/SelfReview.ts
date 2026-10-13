@@ -175,7 +175,7 @@ export class SelfReview extends Context.Service<SelfReview, {
         const index = messages.findIndex((message) => message.id === input.messageId)
         if (index === -1) return yield* fail("The reviewed message no longer exists.")
 
-        const botTools = yield* toolbox.forBot(bot, { conversationId: input.conversationId })
+        const botTools = yield* toolbox.forBot(bot, { conversationId: input.conversationId, conversationKind: conversation.kind })
         const available = new Set(botTools.tools.map((tool) => tool.name))
         const kinds = new Set([...input.kinds].filter((kind) =>
           kind === "skills"

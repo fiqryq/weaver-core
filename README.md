@@ -17,6 +17,7 @@ It runs on your VPS and does the actual work. The Mac app is a client that talks
 - **Use your models and apps.** Any OpenAI-compatible model, with presets for DeepSeek, OpenAI, Qwen, Kimi, GLM and MiniMax. MCP servers become integrations. Hosted apps like Notion, Linear or Sentry sign in with OAuth: you approve in the browser on your Mac, and the server keeps and refreshes the tokens.
 - **Remember and learn.** With [Basic Memory](https://github.com/basicmachines-co/basic-memory), bots share a knowledge base of Markdown notes, keep a Core Memory note about you, recall related notes before replying, and condense their memory when it grows. Bots also write `SKILL.md` skills as they work. A shared skills library installs skills from GitHub or a catalog, and you choose which bots get each one.
 - **Work together.** A bot can hand work to a teammate with `ask_bot`; the result is saved to the knowledge base. A team has a manager bot and members with roles. You brief the manager in a private chat, watch the team work in a room, and get decisions, questions and a final summary back.
+- **Build their own team.** Ask a bot for a team ("I need a mini team for my brand"). It looks up skills with `find_skills` and proposes new bots with roles, instructions, tools and skills with `propose_team`. Nothing is created until you approve. Then the server installs the catalog skills, creates the bots and sets up the team.
 
 Built with [Bun](https://bun.sh), [Effect 4](https://effect.website) and SQLite. It ships as a single binary.
 
@@ -216,6 +217,8 @@ Controlling it:
 - `POST /v1/teams/:id/resume` continues a team that's `waiting`, or `interrupted` (it was working when the server stopped).
 - Posting or regenerating in a room, or changing its bots, answers `409` or `400`.
 - A bot that manages a team can't be deleted.
+
+Bots can propose a team themselves with `propose_team`, in chats and private team chats. It always asks for approval, whatever the bot's approval mode, and the proposal is checked before you're asked. On approval the server does four things in order. It installs any requested skills from the catalog, skipping names it can't find. It creates the new bots with approval mode `ask`, the default model and a `blob.<kind>` avatar. It creates the team, led by the proposing bot (`"manager": "me"`) or one of the new bots. Then it returns a summary such as `Created team "Brand Studio" (manager: Iris) with Kai (Copywriter). Installed skills: brand-guidelines. Skipped: unknown-skill (not found).` Clients get the usual `team-changed` and `skill-library-changed` events; new bots appear on the next pull of `/v1/bots`.
 
 ## Settings
 

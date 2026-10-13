@@ -5,6 +5,7 @@ import { invalid, type SkillInvalid } from "../skills/errors.ts"
 import { skillFile } from "../skills/files.ts"
 import { fieldText, parseFrontmatter, validateName } from "../skills/frontmatter.ts"
 import { limits, maxSkillBytes, maxSkillFiles } from "./bundle.ts"
+import type { InstallOptions, LibraryStore } from "./LibraryStore.ts"
 import { Catalog, type CatalogSkill, type SkillBundle, type SkillSource } from "./LibrarySkill.ts"
 import { isZip, readZip } from "./zip.ts"
 
@@ -306,3 +307,18 @@ export class SkillSources extends Context.Service<SkillSources, {
     })
   )
 }
+
+/**
+ * Downloads the skill a link points to (a catalog entry's `url`, say) and adds it to the library,
+ * as `POST /v1/skills/install` does.
+ */
+export const installFromUrl = (
+  sources: SkillSources["Service"],
+  library: LibraryStore["Service"],
+  url: string,
+  options: Omit<InstallOptions, "createdBy" | "source"> = {}
+) =>
+  Effect.flatMap(
+    sources.fetch(url),
+    ({ bundle, source }) => library.install(bundle, { ...options, createdBy: "import", source })
+  )

@@ -7,7 +7,7 @@ import type { LibraryImport } from "./api.ts"
 import { limits, maxSkillBytes, maxSkillFiles } from "./library/bundle.ts"
 import { LibraryStore } from "./library/LibraryStore.ts"
 import { Catalog, type SkillBundle } from "./library/LibrarySkill.ts"
-import { SkillSources } from "./library/SkillSources.ts"
+import { installFromUrl, SkillSources } from "./library/SkillSources.ts"
 import { isZip, readZip } from "./library/zip.ts"
 import { type SkillExists, type SkillInvalid, type SkillStorageError, SkillStore } from "./skills/SkillStore.ts"
 
@@ -122,16 +122,11 @@ export const LibraryHandlers = HttpApiBuilder.group(
       .handle("remove", ({ params }) => library.remove(params.name).pipe(Effect.catchTag("SkillStorageError", Effect.die)))
       .handle("bots", ({ params, payload }) => library.setBots(params.name, payload.botIds).pipe(Effect.catchTags(changeErrors)))
       .handle("install", ({ payload }) =>
-        Effect.gen(function*() {
-          const { bundle, source } = yield* sources.fetch(payload.url).pipe(Effect.catchTag("SkillInvalid", badRequest))
-          return yield* library.install(bundle, {
-            name: payload.name,
-            force: payload.force,
-            assignBotIds: payload.assignBotIds,
-            createdBy: "import",
-            source
-          }).pipe(Effect.catchTags(addErrors))
-        }))
+        installFromUrl(sources, library, payload.url, {
+          name: payload.name,
+          force: payload.force,
+          assignBotIds: payload.assignBotIds
+        }).pipe(Effect.catchTags(addErrors)))
       .handle("import", ({ payload }) =>
         Effect.gen(function*() {
           const bundle = yield* importFiles(payload)

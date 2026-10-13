@@ -19,18 +19,26 @@ import {
   pinProject
 } from "../../tools/builtin/Memory.ts"
 import { runCommandTool } from "../../tools/builtin/Shell.ts"
+import { findSkillsTool, proposeTeamTool } from "../../tools/builtin/TeamBuilder.ts"
 import { webTools } from "../../tools/builtin/Web.ts"
 import { sessionSearchTool } from "../../tools/learning/SessionSearch.ts"
 import { skillTools } from "../../tools/learning/Skills.ts"
 import type { Bot } from "../bots/Bot.ts"
+import { BotRepo } from "../bots/BotRepo.ts"
+import type { ConversationKind } from "../conversations/Conversation.ts"
+import { ConversationRepo } from "../conversations/ConversationRepo.ts"
 import { IntegrationOAuth, signInAgainMessage } from "../integrations/IntegrationOAuth.ts"
 import { IntegrationRepo } from "../integrations/IntegrationRepo.ts"
 import { McpHub, type McpServerConfig } from "../integrations/McpHub.ts"
 import { LibraryStore } from "../learning/library/LibraryStore.ts"
+import { SkillSources } from "../learning/library/SkillSources.ts"
 import { CoreMemory } from "../learning/memory/CoreMemory.ts"
 import type { RecalledNote } from "../learning/memory/recall.ts"
 import { type SkillIndexEntry, SkillStore } from "../learning/skills/SkillStore.ts"
 import { KnowledgeBase, writeTarget } from "../memory/KnowledgeBase.ts"
+import { TeamRepo } from "../teams/TeamRepo.ts"
+import type { TeamSetup } from "../teams/teamSetup.ts"
+import { RunEvents } from "./RunEvents.ts"
 
 export interface BotTools {
   readonly tools: ReadonlyArray<AgentTool>
@@ -51,6 +59,11 @@ export interface BotTools {
 
 export interface ForBotOptions {
   readonly conversationId?: string
+  /**
+   * The kind of conversation being answered. Replies in one get find_skills, and in chats and team
+   * private chats also propose_team; left out (e.g. outside a reply), neither is offered.
+   */
+  readonly conversationKind?: ConversationKind | undefined
   readonly recallQuery?: string | undefined
 }
 
@@ -77,6 +90,16 @@ export class Toolbox extends Context.Service<Toolbox, {
       const camofox = yield* Camofox
       const coreMemory = yield* CoreMemory
       const knowledge = yield* KnowledgeBase
+      const bots = yield* BotRepo
+      const conversations = yield* ConversationRepo
+      const events = yield* RunEvents
+      // Optional so the toolbox works in layer graphs without teams or the skills catalog; without
+      // them, bots can't build teams.
+      const teams = yield* Effect.serviceOption(TeamRepo)
+      const sources = Option.getOrUndefined(yield* Effect.serviceOption(SkillSources))
+      const teamSetup: TeamSetup | undefined = Option.isSome(teams)
+        ? { teams: teams.value, bots, conversations, events }
+        : undefined
 
       const browserServer: McpServerConfig | undefined = config.browser === "playwright" && config.browserCommand.length > 0
         ? {
@@ -239,6 +262,14 @@ export class Toolbox extends Context.Service<Toolbox, {
                 label: integration.name
               }))
             }
+          }
+        }
+
+        const kind = options?.conversationKind
+        if (kind !== undefined) {
+          tools.push(findSkillsTool({ library, sources }))
+          if ((kind === "chat" || kind === "team-private") && teamSetup !== undefined && sources !== undefined) {
+            tools.push(proposeTeamTool({ proposer: bot, setup: teamSetup, library, sources }))
           }
         }
 

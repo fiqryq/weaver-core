@@ -1,6 +1,7 @@
 import type { Prompt } from "effect/ai"
 import { truncate } from "../../platform/lib/util.ts"
 import { askBotToolName, handoffPrompt, teammatesPrompt } from "../../tools/builtin/AskBot.ts"
+import { findSkillsToolName, proposeTeamToolName, teamBuilderGuidance } from "../../tools/builtin/TeamBuilder.ts"
 import { corePrompt, memoryInstructions } from "../../tools/builtin/Memory.ts"
 import { sessionSearchGuidance } from "../../tools/learning/SessionSearch.ts"
 import type { Bot } from "../bots/Bot.ts"
@@ -111,7 +112,8 @@ export const systemPrompt = (context: PromptContext): string => {
   }
 
   const toolNames = new Set(tools.tools.map((tool) => tool.name))
-  if (toolNames.size > 0) {
+  // Building teams doesn't use the bot's computer.
+  if ([...toolNames].some((tool) => tool !== findSkillsToolName && tool !== proposeTeamToolName)) {
     const abilities: Array<string> = []
     if (toolNames.has("run_command")) abilities.push("run shell commands")
     if (toolNames.has("read_file")) abilities.push("read and write files")
@@ -140,6 +142,7 @@ export const systemPrompt = (context: PromptContext): string => {
   if (toolNames.has(askBotToolName) && context.teammates !== undefined && context.teammates.length > 0) {
     system += `\n\n${teammatesPrompt(context.teammates)}`
   }
+  if (toolNames.has(proposeTeamToolName)) system += `\n\n${teamBuilderGuidance}`
   if (tools.unavailable.length > 0) {
     system += `\n\nThese are set up but unreachable right now, so say so if the user asks for them: ${tools.unavailable.join("; ")}.`
   }
