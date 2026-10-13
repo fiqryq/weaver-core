@@ -3,16 +3,16 @@ import { redactSecrets, redactSecretsFromData } from "../../../src/platform/lib/
 
 describe("redactSecrets", () => {
   it("redacts OpenAI API keys", () => {
-    const input = "Using API key sk-proj-1234567890abcdefghijklmnopqrstuvwxyz to call OpenAI"
+    const input = "Using API key sk-proj-FAKEtokenNOTrealJUSTforTEST1234567890 to call OpenAI"
     const output = redactSecrets(input)
-    expect(output).not.toContain("sk-proj-1234567890")
+    expect(output).not.toContain("sk-proj-FAKEtoken")
     expect(output).toContain("[REDACTED:sk-***]")
   })
 
   it("redacts GitHub personal access tokens", () => {
-    const input = "Token: ghp_1234567890abcdefghijklmnopqrstuvwxyz"
+    const input = "Token: ghp_FAKEtokenForTestingPurposesNotRealGitHub123"
     const output = redactSecrets(input)
-    expect(output).not.toContain("ghp_1234567890")
+    expect(output).not.toContain("ghp_FAKEtoken")
     expect(output).toContain("[REDACTED:ghp_***]")
   })
 
@@ -54,9 +54,9 @@ MHcCAQEEIAbcdefghijklmnopqrstuvwxyz1234567890ABCDEF
   })
 
   it("redacts bearer tokens from Authorization headers", () => {
-    const input = "Authorization: Bearer abc123def456ghi789jkl012mno345pqr678stu901"
+    const input = "Authorization: Bearer FAKEtokenForTestNotRealCredential123456789"
     const output = redactSecrets(input)
-    expect(output).not.toContain("abc123def456")
+    expect(output).not.toContain("FAKEtokenForTest")
     expect(output).toContain("Authorization: Bearer [REDACTED]")
   })
 
@@ -67,10 +67,10 @@ MHcCAQEEIAbcdefghijklmnopqrstuvwxyz1234567890ABCDEF
   })
 
   it("handles multiple secrets in one string", () => {
-    const input = "Key1: sk-abc123xyz456def789ghi, Key2: ghp_1234567890abcdefghijklmnopqrstuvwxyz"
+    const input = "Key1: sk-FAKEkeyForTestOnly123456, Key2: ghp_FAKEtokenTestOnly987654321ABCD"
     const output = redactSecrets(input)
-    expect(output).not.toContain("sk-abc123xyz456")
-    expect(output).not.toContain("ghp_1234567890")
+    expect(output).not.toContain("sk-FAKEkeyForTest")
+    expect(output).not.toContain("ghp_FAKEtoken")
     expect(output).toContain("[REDACTED:sk-***]")
     expect(output).toContain("[REDACTED:ghp_***]")
   })
@@ -78,9 +78,9 @@ MHcCAQEEIAbcdefghijklmnopqrstuvwxyz1234567890ABCDEF
 
 describe("redactSecretsFromData", () => {
   it("redacts secrets in string values", () => {
-    const input = { apiKey: "sk-1234567890abcdefghijklmnopqrstuvwxyz" }
+    const input = { apiKey: "sk-FAKEkeyTestOnlyNotRealKey1234567890" }
     const output = redactSecretsFromData(input) as typeof input
-    expect(output.apiKey).not.toContain("sk-1234567890")
+    expect(output.apiKey).not.toContain("sk-FAKEkey")
     expect(output.apiKey).toContain("[REDACTED:sk-***]")
   })
 
@@ -88,20 +88,20 @@ describe("redactSecretsFromData", () => {
     const input = {
       service: "openai",
       config: {
-        key: "sk-1234567890abcdefghijklmnopqrstuvwxyz",
+        key: "sk-FAKEkeyForTestPurposesOnly123456789",
         endpoint: "https://api.openai.com"
       }
     }
     const output = redactSecretsFromData(input) as typeof input
-    expect(output.config.key).not.toContain("sk-1234567890")
+    expect(output.config.key).not.toContain("sk-FAKEkey")
     expect(output.config.endpoint).toBe("https://api.openai.com")
   })
 
   it("redacts secrets in arrays", () => {
     const input = [
       "normal text",
-      "token: ghp_1234567890abcdefghijklmnopqrstuvwxyz",
-      { key: "sk-abc123xyz456def789ghi" }
+      "token: ghp_FAKEtokenForTestNotRealGitHubToken123",
+      { key: "sk-FAKEkeyTestOnly987654" }
     ]
     const output = redactSecretsFromData(input) as typeof input
     expect(output[0]).toBe("normal text")

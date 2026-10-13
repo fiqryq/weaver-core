@@ -769,6 +769,16 @@ chmod 600 "$SERVER_TOKEN_FILE"
 chown root:root "$SERVER_TOKEN_FILE"
 SERVER_TOKEN="$(tr -d '[:space:]' < "$SERVER_TOKEN_FILE")"
 
+# AES-256 encryption key for OAuth tokens at rest (32 bytes = 64 hex chars)
+ENCRYPTION_KEY_FILE=/etc/weaver/encryption-key
+(
+  umask 077
+  [ -s "$ENCRYPTION_KEY_FILE" ] || openssl rand -hex 32 > "$ENCRYPTION_KEY_FILE"
+)
+chmod 600 "$ENCRYPTION_KEY_FILE"
+chown root:root "$ENCRYPTION_KEY_FILE"
+ENCRYPTION_KEY="$(tr -d '[:space:]' < "$ENCRYPTION_KEY_FILE")"
+
 # The agent server runs on the same machine, so it reaches Basic Memory on loopback
 # (behind the token proxy that's the upstream port, which needs no token).
 if [ -n "${SKIP_MEMORY:-}" ]; then
@@ -809,6 +819,7 @@ WEAVER_TOKEN=$SERVER_TOKEN
 WEAVER_LISTEN=$TS_IP:7700
 WEAVER_DATA_DIR=$DATA_DIR
 WEAVER_MEMORY_URL=$AGENT_MEMORY_URL
+WEAVER_ENCRYPTION_KEY=$ENCRYPTION_KEY
 $BROWSER_SETTINGS
 WEAVER_BOT_USER=per-bot
 WEAVER_BOT_GROUP=$BOT_GROUP
