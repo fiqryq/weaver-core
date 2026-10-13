@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# Backs up everything Weaver needs to come back, on this VPS or a new one, into one file: the agent
+# server's data (bots, chats, provider keys, app sign-ins, teams, skills, workspaces and each bot's home
+# folder) and Basic Memory's notes, projects and index. Run as root:
+#
+#   sudo weaver-backup                write /var/lib/weaver/backups/weaver-backup-<date>-<time>.tar.gz
+#   sudo weaver-backup -o FILE        write FILE instead; "-" writes to standard output, so from your Mac:
+#                                     ssh my-vps 'sudo weaver-backup -o -' > weaver-backup.tar.gz
+#   sudo weaver-backup --browser      also save the bots' browser logins (Camoufox's profiles and cookies)
+#   sudo weaver-backup --keep N       keep the newest N backups in /var/lib/weaver/backups (default 7)
+#
+# Databases are copied with SQLite's online backup, so Weaver keeps running. The tokens and keys in
+# /etc/weaver aren't included: each install makes its own, and its connect link points the Mac at it.
+# The file holds model API keys and sign-in tokens, so keep it private. weaver-restore puts it back.
+# weaver-backup.timer runs this nightly.
+set -euo pipefail
+umask 077
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+DATA_DIR=/var/lib/weaver
+BACKUP_DIR=$DATA_DIR/backups
+MEMORY_HOME=/home/weaver
+BROWSER_HOME=/var/lib/weaver-browser
+ENV_FILE=/etc/weaver/agent.env
+LOCK_FILE=/run/lock/weaver-backup.lock
+FORMAT=1
+
+# Standard output may be the backup itself, so messages go to standard error.
+say() { printf '%s\n' "$*" >&2; }
+die() { printf 'weaver-backup: %s\n' "$*" >&2; exit 1; }
+
+OUTPUT=""
+BROWSER=""
+KEEP=7
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o | --output) [ "$#" -ge 2 ] || die "-o needs a file name"; OUTPUT="$2"; shift ;;
+    --browser) BROWSER=1 ;;
+    --keep) [ "$#" -ge 2 ] || die "--keep needs a number"; KEEP="$2"; shift ;;
+    -h | --help) sed -n '2,15s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    *) die "unknown option $1 (try --help)" ;;
+  esac
+  shift
+done
+[[ "$KEEP" =~ ^[1-9][0-9]*$ ]] || die "--keep needs a number from 1 up"
+[ "$(id -u)" -eq 0 ] || die "run this as root, for example: sudo weaver-backup"
+[ -d "$DATA_DIR" ] || die "$DATA_DIR doesn't exist; run install.sh first"
+command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is missing (apt-get install sqlite3)"
+
+exec 9>"$LOCK_FILE"
+flock -w 600 9 || die "another backup or restore is still running"
+
+if [ ! -d "$BACKUP_DIR" ]; then
+  mkdir -m 700 "$BACKUP_DIR"
+  ! id weaver >/dev/null 2>&1 || chown weaver:weaver "$BACKUP_DIR"
+fi
+# Database copies are made here by the databases' owners (see snapshot), so it can't be private to root.
+STAGE="$(mktemp -d "$BACKUP_DIR/.staging.XXXXXX")"
+chmod 711 "$STAGE"
+PARTIAL=""
+# shellcheck disable=SC2329 # run by the EXIT trap
+cleanup() {
+  rm -rf "$STAGE"
+  [ -z "$PARTIAL" ] || rm -f "$PARTIAL"
+}
+trap cleanup EXIT
+mkdir -p "$STAGE/weaver-backup/memory-index"
+
+# Copies the SQLite database $1 to $2 while it's in use. It runs as the database's owner, so the -wal
+# and -shm files SQLite may create next to the database keep the owner the server expects.
+snapshot() {
+  local db="$1" copy="$2" owner work
+  owner="$(stat -c %U "$db")"
+  work="$(mktemp -d "$STAGE/.db.XXXXXX")"
+  chown "$owner" "$work"
+  setpriv --reuid="$owner" --regid="$(id -g "$owner")" --init-groups \
+    sqlite3 "$db" ".backup '$work/copy.db'" || die "couldn't copy $db"
+  [ "$(sqlite3 "$work/copy.db" 'PRAGMA quick_check;')" = ok ] || die "the copy of $db failed its integrity check"
+  mv "$work/copy.db" "$copy"
+  rm -rf "$work"
+}
+
+# Paths to archive, relative to /.
+MEMBERS=("${DATA_DIR#/}")
+BOTS="?"
+if [ -f "$DATA_DIR/weaver.db" ]; then
+  snapshot "$DATA_DIR/weaver.db" "$STAGE/weaver-backup/weaver.db"
+  BOTS="$(sqlite3 "$STAGE/weaver-backup/weaver.db" 'SELECT count(*) FROM bots;' 2>/dev/null || echo "?")"
+fi
+
+# Basic Memory: its config and index in ~/.basic-memory, and the folders of its projects that are in the
+# weaver user's home (the default project and basic-memory-projects, where Weaver creates new ones).
+MEMORY=no
+MEMORY_CONFIG="$MEMORY_HOME/.basic-memory"
+if [ -d "$MEMORY_CONFIG" ]; then
+  MEMORY=yes
+  MEMBERS+=("${MEMORY_CONFIG#/}")
+  for db in "$MEMORY_CONFIG"/*.db; do
+    [ -f "$db" ] || continue
+    snapshot "$db" "$STAGE/weaver-backup/memory-index/${db##*/}"
+  done
+  PROJECTS="$(python3 - "$MEMORY_CONFIG/config.json" <<'EOF' 2>/dev/null || true
+import json, sys
+try:
+    projects = json.load(open(sys.argv[1])).get("projects", {})
+except Exception:
+    sys.exit(0)
+paths = projects.values() if isinstance(projects, dict) else projects
+for entry in paths:
+    path = entry.get("path") if isinstance(entry, dict) else entry
+    if isinstance(path, str) and "\n" not in path:
+        print(path)
+EOF
+)"
+  # Weaver's default folders, in case the config couldn't be read.
+  PROJECTS="$PROJECTS
+$MEMORY_HOME/basic-memory
+$MEMORY_HOME/basic-memory-projects/"
+  while IFS= read -r project; do
+    [ -n "$project" ] || continue
+    case "$project" in
+      "$MEMORY_HOME"/?*) top="${project#"$MEMORY_HOME"/}"; top="${top%%/*}" ;;
+      *) say "Not included: the memory project in $project (only projects in $MEMORY_HOME are backed up)."; continue ;;
+    esac
+    case "$top" in .basic-memory | . | ..) continue ;; esac
+    [ -d "$MEMORY_HOME/$top" ] && [ ! -L "$MEMORY_HOME/$top" ] || continue
+    case " ${MEMBERS[*]} " in *" ${MEMORY_HOME#/}/$top "*) continue ;; esac
+    MEMBERS+=("${MEMORY_HOME#/}/$top")
+  done <<<"$PROJECTS"
+fi
+
+BROWSER_SAVED=no
+if [ -n "$BROWSER" ]; then
+  if [ -d "$BROWSER_HOME" ]; then
+    BROWSER_SAVED=yes
+    MEMBERS+=("${BROWSER_HOME#/}")
+  else
+    say "There are no browser logins to save ($BROWSER_HOME doesn't exist)."
+  fi
+fi
+
+VERSION=""
+if [ -f "$ENV_FILE" ]; then
+  LISTEN="$(sed -n 's/^WEAVER_LISTEN=//p' "$ENV_FILE" | tail -n1)"
+  HOST="${LISTEN%:*}"
+  case "$HOST" in "" | 0.0.0.0 | "[::]" | "::") HOST=127.0.0.1 ;; esac
+  VERSION="$(curl -fsS --max-time 3 "http://$HOST:${LISTEN##*:}/v1/health" 2>/dev/null \
+    | sed -n 's/.*"version":"\([^"]*\)".*/\1/p' || true)"
+fi
+cat > "$STAGE/weaver-backup/manifest" <<EOF
+format=$FORMAT
+created=$(date -Iseconds)
+host=$(hostname)
+server_version=${VERSION:-unknown}
+bots=$BOTS
+memory=$MEMORY
+browser=$BROWSER_SAVED
+EOF
+
+STAMP="$(date +%Y-%m-%d-%H%M%S)"
+IN_BACKUP_DIR=""
+if [ -z "$OUTPUT" ]; then
+  OUTPUT="$BACKUP_DIR/weaver-backup-$STAMP.tar.gz"
+  IN_BACKUP_DIR=1
+fi
+if [ "$OUTPUT" = - ]; then
+  [ ! -t 1 ] || die "standard output is a terminal; redirect it to a file, like: weaver-backup -o - > backup.tar.gz"
+  TARGET=-
+else
+  PARTIAL="$OUTPUT.partial"
+  rm -f "$PARTIAL"
+  TARGET="$PARTIAL"
+fi
+
+# Bots may change files in their workspaces while this runs; tar notes that and carries on (status 1).
+# The databases come from the snapshots above, never from the live files.
+STATUS=0
+tar --create --gzip --file "$TARGET" \
+  --ignore-failed-read --warning=no-file-changed --warning=no-file-removed --warning=no-file-shrank \
+  --warning=no-file-ignored --anchored \
+  --exclude="${BACKUP_DIR#/}" \
+  --exclude="${DATA_DIR#/}/weaver.db" --exclude="${DATA_DIR#/}/weaver.db-wal" --exclude="${DATA_DIR#/}/weaver.db-shm" \
+  --exclude="${MEMORY_CONFIG#/}/*.db" --exclude="${MEMORY_CONFIG#/}/*.db-wal" --exclude="${MEMORY_CONFIG#/}/*.db-shm" \
+  -C "$STAGE" weaver-backup \
+  -C / "${MEMBERS[@]}" || STATUS=$?
+[ "$STATUS" -le 1 ] || die "tar couldn't write the backup (status $STATUS)"
+
+if [ "$TARGET" = - ]; then
+  say "Wrote the backup to standard output ($BOTS bots, memory: $MEMORY, browser logins: $BROWSER_SAVED)."
+  exit 0
+fi
+chmod 600 "$PARTIAL"
+mv -f "$PARTIAL" "$OUTPUT"
+PARTIAL=""
+say "Backed up to $OUTPUT ($(du -h "$OUTPUT" | cut -f1); $BOTS bots, memory: $MEMORY, browser logins: $BROWSER_SAVED)."
+
+if [ -n "$IN_BACKUP_DIR" ]; then
+  # File names sort by date, so the oldest come first.
+  set -- "$BACKUP_DIR"/weaver-backup-*.tar.gz
+  while [ "$#" -gt "$KEEP" ]; do
+    rm -f -- "$1"
+    shift
+  done
+fi
