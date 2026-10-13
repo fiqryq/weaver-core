@@ -2,10 +2,14 @@ import { Duration, Effect, Redacted, Stream } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { AppConfig } from "../../config/Config.ts"
 import { tokensMatch } from "../../platform/http/Authorization.ts"
+import { redactSecretsFromData } from "../../platform/lib/secrets.ts"
 import type { RunEvent } from "./Events.ts"
 import { RunEvents } from "./RunEvents.ts"
 
-export const encodeEvent = (event: RunEvent): string => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+export const encodeEvent = (event: RunEvent): string => {
+  const redacted = redactSecretsFromData(event) as RunEvent
+  return `event: ${event.type}\ndata: ${JSON.stringify(redacted)}\n\n`
+}
 
 /**
  * Server-sent events: `/v1/events` streams every conversation, `/v1/conversations/:id/events` one of them.
