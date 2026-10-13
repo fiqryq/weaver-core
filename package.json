@@ -8,9 +8,9 @@
     "start": "bun src/main.ts",
     "check": "tsc --noEmit",
     "test": "bun --bun vitest run",
-    "build": "bun build src/main.ts --compile --outfile dist/weaver-server",
-    "build:linux-x64": "bun build src/main.ts --compile --target=bun-linux-x64 --outfile dist/weaver-server-linux-x64",
-    "build:linux-arm64": "bun build src/main.ts --compile --target=bun-linux-arm64 --outfile dist/weaver-server-linux-arm64"
+    "build": "bun build.ts --outfile dist/weaver-server",
+    "build:linux-x64": "bun build.ts --target=bun-linux-x64 --outfile dist/weaver-server-linux-x64",
+    "build:linux-arm64": "bun build.ts --target=bun-linux-arm64 --outfile dist/weaver-server-linux-arm64"
   },
   "dependencies": {
     "@effect/ai-openai-compat": "4.0.2",

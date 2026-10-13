@@ -3,8 +3,9 @@ name: Release
 # Tests the agent server on every pull request and push. Pushes to main refresh the rolling
 # `server-latest` prerelease that install.sh and weaver-update download; tags named `v*` or
 # `server-v*` get a versioned release. Each release has the Linux binaries, the setup script
-# (install.sh), the helper scripts the VPS installs (weaver-bot-user, weaver-update) and SHA256SUMS
-# covering all of them.
+# (install.sh), the helper scripts the VPS installs (weaver-bot-user, weaver-update, weaver-backup,
+# weaver-restore), release.json (version, commit, tag, date and notes, which running servers read to
+# offer updates) and SHA256SUMS covering all of them.
 on:
   push:
     branches: [main]
@@ -41,30 +42,59 @@ jobs:
     needs: test
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+      commit: ${{ steps.identity.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      - name: Build identity
+        id: identity
+        run: |
+          # Tags server-v1.2.3 and v1.2.3 build version 1.2.3; everything else package.json's version.
+          version="$(jq -r .version package.json)"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [[ "$GITHUB_REF_NAME" =~ ^(server-)?v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
+            version="${BASH_REMATCH[2]}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - run: bun run build:linux-x64 && bun run build:linux-arm64
+        env:
+          WEAVER_BUILD_VERSION: ${{ steps.identity.outputs.version }}
+          WEAVER_BUILD_COMMIT: ${{ steps.identity.outputs.commit }}
       - name: Smoke test the x64 binary
         run: |
           data="$(mktemp -d)"
           WEAVER_TOKEN=ci-smoke-test-token WEAVER_LISTEN=127.0.0.1:7799 WEAVER_DATA_DIR="$data" ./dist/weaver-server-linux-x64 &
           server=$!
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:7799/v1/health; then kill "$server"; exit 0; fi
+            if health="$(curl -fsS http://127.0.0.1:7799/v1/health)"; then
+              echo "$health"
+              kill "$server"
+              # The binary reports the build it was stamped with.
+              echo "$health" | jq -e --arg version "$VERSION" --arg commit "$COMMIT" \
+                '.version == $version and .commit == $commit and .updates == true' >/dev/null
+              exit
+            fi
             sleep 1
           done
           kill "$server" || true
           exit 1
+        env:
+          VERSION: ${{ steps.identity.outputs.version }}
+          COMMIT: ${{ steps.identity.outputs.commit }}
       - name: Collect release files
         run: |
           mkdir release
-          cp dist/weaver-server-linux-x64 dist/weaver-server-linux-arm64 scripts/install.sh scripts/weaver-bot-user scripts/weaver-update release/
+          cp dist/weaver-server-linux-x64 dist/weaver-server-linux-arm64 scripts/install.sh scripts/weaver-bot-user \
+            scripts/weaver-update scripts/weaver-backup scripts/weaver-restore release/
           chmod 755 release/*
-          cd release && sha256sum weaver-server-linux-x64 weaver-server-linux-arm64 install.sh weaver-bot-user weaver-update > SHA256SUMS
+          # The release job adds release.json to SHA256SUMS once the release (and its notes) exist.
+          cd release && sha256sum weaver-server-linux-x64 weaver-server-linux-arm64 install.sh weaver-bot-user \
+            weaver-update weaver-backup weaver-restore > SHA256SUMS
           cat SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
@@ -82,6 +112,11 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.build.outputs.version }}
+      COMMIT: ${{ needs.build.outputs.commit }}
+      FILES: >-
+        release/weaver-server-linux-x64 release/weaver-server-linux-arm64 release/install.sh release/weaver-bot-user
+        release/weaver-update release/weaver-backup release/weaver-restore release/release.json
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -102,9 +137,12 @@ jobs:
           else
             gh release create server-latest --verify-tag --prerelease --title "Agent server (latest)" --notes "$notes"
           fi
+          jq -n --arg version "$VERSION" --arg commit "$COMMIT" --arg tag server-latest \
+            --arg publishedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg notes "$notes" \
+            '{version: $version, commit: $commit, tag: $tag, publishedAt: $publishedAt, notes: $notes}' > release/release.json
+          (cd release && sha256sum release.json >> SHA256SUMS)
           # SHA256SUMS goes last; the setup script retries if it catches the files mid-upload.
-          gh release upload server-latest --clobber \
-            release/weaver-server-linux-x64 release/weaver-server-linux-arm64 release/install.sh release/weaver-bot-user release/weaver-update
+          gh release upload server-latest --clobber $FILES
           gh release upload server-latest --clobber release/SHA256SUMS
       - name: Versioned release
         if: startsWith(github.ref, 'refs/tags/')
@@ -113,6 +151,11 @@ jobs:
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --title "Agent server $version" --generate-notes
           fi
-          gh release upload "$GITHUB_REF_NAME" --clobber \
-            release/weaver-server-linux-x64 release/weaver-server-linux-arm64 release/install.sh release/weaver-bot-user release/weaver-update
+          # release.json carries the release's notes and date, so it's made once the release exists.
+          gh release view "$GITHUB_REF_NAME" --json body,publishedAt,createdAt \
+            | jq --arg version "$VERSION" --arg commit "$COMMIT" --arg tag "$GITHUB_REF_NAME" \
+              '{version: $version, commit: $commit, tag: $tag, publishedAt: (.publishedAt // .createdAt), notes: (.body // "")}' \
+              > release/release.json
+          (cd release && sha256sum release.json >> SHA256SUMS)
+          gh release upload "$GITHUB_REF_NAME" --clobber $FILES
           gh release upload "$GITHUB_REF_NAME" --clobber release/SHA256SUMS
