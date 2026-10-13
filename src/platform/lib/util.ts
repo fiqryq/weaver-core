@@ -1,5 +1,7 @@
 import { DateTime, Effect, Schema } from "effect"
 
+export const fallbackPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 export const newId = (): string => crypto.randomUUID()
 
 export const nowIso: Effect.Effect<string> = Effect.map(DateTime.now, DateTime.formatIso)

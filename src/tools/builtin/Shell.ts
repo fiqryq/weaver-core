@@ -1,6 +1,6 @@
 import { Clock, Duration, Effect, Fiber, Option, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { childEnv } from "../../platform/lib/util.ts"
+import { childEnv, fallbackPath } from "../../platform/lib/util.ts"
 import { type AgentTool, decodeParams, jsonSchemaOf, shorten, ToolFailure } from "../AgentTool.ts"
 
 /** Together under the runner's tool output limit, so the end of the output is never cut again. */
@@ -76,7 +76,6 @@ export class OutputBuffer {
 
 /** Variables from the server's environment that commands run as the bot user still get. */
 const keptForBotUser = ["LANG", "LANGUAGE", "LC_ALL", "TZ"] as const
-const fallbackPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 export interface CommandSpec {
   readonly command: string
