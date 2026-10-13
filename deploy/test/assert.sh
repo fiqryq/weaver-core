@@ -231,6 +231,7 @@ check "the weaver-bots group exists" getent group weaver-bots
 check "the shared weaver-bot user still exists" id weaver-bot
 check "$HELPER is root:root 0755" test "$(stat -c '%U:%G %a' "$HELPER")" = "root:root 755"
 check "weaver-update is installed" test -x /usr/local/bin/weaver-update
+check "weaver-backup and weaver-restore are installed" test -x /usr/local/bin/weaver-backup -a -x /usr/local/bin/weaver-restore
 check "the sudoers file is valid" visudo -cf /etc/sudoers.d/weaver-bot
 check "the sudoers file is root:root 0440" test "$(stat -c '%U:%G %a' /etc/sudoers.d/weaver-bot)" = "root:root 440"
 check "sudo lets weaver run the helper" runuser -u weaver -- sudo -n -l "$HELPER" ensure x
@@ -313,13 +314,15 @@ check "today's backups are weaver's and private" test -z "$(find "$BACKUPS" -typ
 rm -rf "/var/lib/weaver/bots/$SKILL_BOT" "$BACKUPS"/weaver-2000-* "$BACKUPS"/skills-2000-*
 
 echo "weaver-update"
+HELPERS=(weaver-bot-user weaver-update weaver-backup weaver-restore)
 make_release() { # <tag> <binary>: a release folder with the binary, the helpers and SHA256SUMS
   local dir="$RELEASES/$1"
   rm -rf "$dir"
   mkdir -p "$dir"
   cp "$2" "$dir/$ASSET"
-  cp /root/weaver-test/helpers/weaver-bot-user /root/weaver-test/helpers/weaver-update "$dir/"
-  (cd "$dir" && sha256sum "$ASSET" weaver-bot-user weaver-update > SHA256SUMS)
+  for helper in "${HELPERS[@]}"; do cp "/root/weaver-test/helpers/$helper" "$dir/"; done
+  printf '{"version":"0.0.0","commit":"test","tag":"%s","publishedAt":"","notes":""}\n' "$1" > "$dir/release.json"
+  (cd "$dir" && sha256sum "$ASSET" "${HELPERS[@]}" release.json > SHA256SUMS)
 }
 ORIGINAL_SUM="$(sha256sum "$SERVER_BIN" | cut -d' ' -f1)"
 cp "$SERVER_BIN" /tmp/weaver-server-good
@@ -361,7 +364,49 @@ check "it rolled back" grep -q "rolled back to the previous agent server" <<<"$O
 check "the original binary is back" test "$(sha256sum "$SERVER_BIN" | cut -d' ' -f1)" = "$ORIGINAL_SUM"
 check "the agent server is healthy after the rollback" healthy
 echo "        (rollback took $((SECONDS - STARTED))s)"
-rm -f /tmp/weaver-server-good /tmp/weaver-server-broken
+
+echo "One-click updates"
+UPDATE_DIR=/var/lib/weaver-update
+check "weaver-update.path is active" systemctl is-active --quiet weaver-update.path
+check "weaver-update.path is enabled" systemctl is-enabled --quiet weaver-update.path
+check "$UPDATE_DIR is root:weaver 1770" test "$(stat -c '%U:%G %a' "$UPDATE_DIR")" = "root:weaver 1770"
+check "the updater's marker is there" test -f "$UPDATE_DIR/.updater-installed"
+api() { curl -sS --max-time 30 -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' "$@"; }
+check "the server says one-click updates are supported" grep -q '"supported":true' <<<"$(api "$BASE/v1/update")"
+update_state() { sed -n 's/.*"state":"\([^"]*\)".*/\1/p' "$UPDATE_DIR/status.json" 2>/dev/null; }
+# Waits for the request to be taken and the update to end.
+update_finished() {
+  local _
+  for _ in $(seq 1 120); do
+    if [ ! -e "$UPDATE_DIR/request" ] && [ ! -L "$UPDATE_DIR/request" ]; then
+      case "$(update_state)" in done | failed | rolled-back) return 0 ;; esac
+    fi
+    sleep 1
+  done
+  return 1
+}
+cp /etc/weaver/agent.env /tmp/agent.env.saved
+echo "WEAVER_UPDATE_URL=file://$RELEASES" >> /etc/weaver/agent.env
+rm -f "$UPDATE_DIR/status.json"
+PID_BEFORE="$(agent_pid)"
+check "POST /v1/update queues the update" test "$(api -o /dev/null -w '%{http_code}' -X POST -d '{"channel":"latest","tag":"broken"}' "$BASE/v1/update")" = 202
+check "the updater picked up the request and finished" update_finished
+check "it rolled back the broken build and says so" test "$(update_state)" = rolled-back
+check "the agent server is healthy after the rollback" healthy
+check "the status is readable by the server's user" runuser -u weaver -- cat "$UPDATE_DIR/status.json"
+refuse "the server's user can't rewrite the status" runuser -u weaver -- sh -c "echo '{}' > $UPDATE_DIR/status.json"
+refuse "the server's user can't remove the marker" runuser -u weaver -- rm -f "$UPDATE_DIR/.updater-installed"
+rm -f "$UPDATE_DIR/status.json"
+check "a request through the API with the same build ends up to date" test "$(api -o /dev/null -w '%{http_code}' -X POST -d '{"channel":"latest","tag":"server-latest"}' "$BASE/v1/update")" = 202
+check "the updater finished it" update_finished
+check "it says done" test "$(update_state)" = "done"
+rm -f "$UPDATE_DIR/status.json"
+runuser -u weaver -- ln -s /etc/weaver/server-token "$UPDATE_DIR/request"
+check "a request that's a link to another file is refused" update_finished
+check "it failed" test "$(update_state)" = failed
+refuse "and doesn't repeat what the file says" grep -qF "$TOKEN" "$UPDATE_DIR/status.json"
+cp /tmp/agent.env.saved /etc/weaver/agent.env
+rm -f /tmp/agent.env.saved /tmp/weaver-server-good /tmp/weaver-server-broken
 
 echo
 if [ "$FAILED" -eq 0 ]; then echo "Round $ROUND: all checks passed."; else echo "Round $ROUND: some checks failed."; fi

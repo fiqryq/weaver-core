@@ -2,7 +2,7 @@ import { BunHttpServer, BunRuntime, BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { HttpRouter } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
-import { AppConfig, version } from "./config/Config.ts"
+import { AppConfig, commit, version } from "./config/Config.ts"
 import { BotRepo } from "./features/bots/BotRepo.ts"
 import { ConversationRepo } from "./features/conversations/ConversationRepo.ts"
 import { IntegrationOAuth } from "./features/integrations/IntegrationOAuth.ts"
@@ -23,6 +23,7 @@ import { EventsRoutes } from "./features/runs/sse.ts"
 import { Toolbox } from "./features/runs/Toolbox.ts"
 import { TeamRepo } from "./features/teams/TeamRepo.ts"
 import { TeamSessions } from "./features/teams/TeamSessions.ts"
+import { Updates } from "./features/updates/Updates.ts"
 import { DatabaseLive } from "./platform/db/Database.ts"
 import { BotUsers } from "./platform/os/BotUsers.ts"
 import { Api } from "./platform/http/Api.ts"
@@ -38,7 +39,7 @@ export const AppServices = TeamSessions.layer.pipe(
   Layer.provideMerge(CoreMemory.layer),
   Layer.provideMerge(Layer.mergeAll(LibraryStore.layer, SkillSources.layer)),
   Layer.provideMerge(Layer.mergeAll(SkillStore.layer, IntegrationOAuth.layer)),
-  Layer.provideMerge(Layer.mergeAll(McpHub.layer, RunEvents.layer, Approvals.layer, BotUsers.layer, Camofox.layer)),
+  Layer.provideMerge(Layer.mergeAll(McpHub.layer, RunEvents.layer, Approvals.layer, BotUsers.layer, Camofox.layer, Updates.layer)),
   Layer.provideMerge(ProviderRegistry.layer),
   Layer.provideMerge(Layer.mergeAll(BotRepo.layer, ConversationRepo.layer, IntegrationRepo.layer, Settings.layer, TeamRepo.layer))
 )
@@ -51,7 +52,7 @@ const Startup = Layer.effectDiscard(Effect.gen(function*() {
   if (interrupted > 0) yield* Effect.logWarning(`Marked ${interrupted} unfinished replies as failed after a restart.`)
   const sessions = yield* teams.markInterrupted
   if (sessions > 0) yield* Effect.logWarning(`Marked ${sessions} team sessions as interrupted after a restart.`)
-  yield* Effect.logInfo(`Weaver agent server ${version} listening on ${config.host}:${config.port}`)
+  yield* Effect.logInfo(`Weaver agent server ${version} (${commit}) listening on ${config.host}:${config.port}`)
 }))
 
 export const AppRoutes = Layer.mergeAll(

@@ -1,6 +1,24 @@
 import { Config, Context, Effect, Layer, Option, Redacted, Schema } from "effect"
+import packageJson from "../../package.json" with { type: "json" }
 
-export const version = "0.1.0"
+// Stamped into release builds by build.ts (`bun build --define`); undefined when run from source.
+declare const WEAVER_BUILD_VERSION: string | undefined
+declare const WEAVER_BUILD_COMMIT: string | undefined
+declare const WEAVER_BUILD_TIME: string | undefined
+
+const stamped = (value: string | undefined): string | undefined =>
+  value !== undefined && value.length > 0 ? value : undefined
+
+/** The release this binary was built as (`server-v1.2.3` builds `1.2.3`), else package.json's version. */
+export const version: string = stamped(typeof WEAVER_BUILD_VERSION === "string" ? WEAVER_BUILD_VERSION : undefined)
+  ?? packageJson.version
+/** Short git SHA the binary was built from; `dev` when run from source. */
+export const commit: string = stamped(typeof WEAVER_BUILD_COMMIT === "string" ? WEAVER_BUILD_COMMIT : undefined) ?? "dev"
+/** When the binary was built (ISO-8601), or null when run from source. */
+export const builtAt: string | null = stamped(typeof WEAVER_BUILD_TIME === "string" ? WEAVER_BUILD_TIME : undefined) ?? null
+
+export const defaultUpdateUrl = "https://github.com/fiqryq/weaver-core/releases/download"
+export const defaultUpdateRepo = "fiqryq/weaver-core"
 
 export const minTokenLength = 16
 
@@ -71,6 +89,15 @@ export interface AppConfigShape {
   readonly skillCatalog: ReadonlyArray<string>
   /** Sent to GitHub when installing skills and reading the catalog; empty sends none. */
   readonly githubToken: Redacted.Redacted<string>
+  /** Where releases are downloaded from, `<url>/<tag>/<file>` (the same `WEAVER_UPDATE_URL` weaver-update reads). */
+  readonly updateUrl: string
+  /** GitHub `owner/repo` whose newest release is the stable update channel. */
+  readonly updateRepo: string
+  /**
+   * Folder shared with the root-side updater (weaver-update.path): the server writes `request` there and
+   * reads `status.json`; `.updater-installed` says the updater is set up.
+   */
+  readonly updateDir: string
 }
 
 export class AppConfig extends Context.Service<AppConfig, AppConfigShape>()("weaver/Config") {
@@ -117,6 +144,9 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigShape>()("wea
       )
       const skillCatalog = yield* Config.String("WEAVER_SKILL_CATALOG").pipe(Config.withDefault(defaultSkillCatalog))
       const githubToken = yield* Config.Redacted("WEAVER_GITHUB_TOKEN").pipe(Config.withDefault(Redacted.make("")))
+      const updateUrl = yield* Config.String("WEAVER_UPDATE_URL").pipe(Config.withDefault(""))
+      const updateRepo = yield* Config.String("WEAVER_UPDATE_REPO").pipe(Config.withDefault(""))
+      const updateDir = yield* Config.String("WEAVER_UPDATE_DIR").pipe(Config.withDefault("/var/lib/weaver-update"))
       const { host, port } = parseListen(listen)
       return AppConfig.of({
         dataDir,
@@ -147,7 +177,10 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigShape>()("wea
           : Option.none(),
         botUserHelper: botUserHelper.trim(),
         skillCatalog: skillCatalog.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0),
-        githubToken: Redacted.make(Redacted.value(githubToken).trim())
+        githubToken: Redacted.make(Redacted.value(githubToken).trim()),
+        updateUrl: updateUrl.trim().replace(/\/+$/, "") || defaultUpdateUrl,
+        updateRepo: updateRepo.trim().replace(/^\/+|\/+$/g, "") || defaultUpdateRepo,
+        updateDir: updateDir.trim() || "/var/lib/weaver-update"
       })
     })
   )
@@ -180,6 +213,9 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigShape>()("wea
         botUserHelper: "/usr/local/lib/weaver/weaver-bot-user",
         skillCatalog: [defaultSkillCatalog],
         githubToken: Redacted.make(""),
+        updateUrl: defaultUpdateUrl,
+        updateRepo: defaultUpdateRepo,
+        updateDir: "/nonexistent/weaver-update",
         ...overrides
       })
     )

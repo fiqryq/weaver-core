@@ -29,6 +29,7 @@ import { BotUsers } from "../../../src/platform/os/BotUsers.ts"
 import { Camofox } from "../../../src/tools/builtin/Camofox.ts"
 import { fakeMemory, type FakeMemory } from "../../support/fakeMemory.ts"
 import { callTool, createConversation, say, scriptedModel, sendAndWait, tempDir } from "../../support/layers.ts"
+import { Updates } from "../../../src/features/updates/Updates.ts"
 
 const services = (memory: FakeMemory, model: Layer.Layer<LanguageModelFactory>, config: Partial<AppConfigShape> = {}) =>
   TeamSessions.layer.pipe(
@@ -39,7 +40,7 @@ const services = (memory: FakeMemory, model: Layer.Layer<LanguageModelFactory>, 
     Layer.provideMerge(CoreMemory.layer),
     Layer.provideMerge(Layer.mergeAll(LibraryStore.layer, SkillSources.layer)),
     Layer.provideMerge(Layer.mergeAll(SkillStore.layer, IntegrationOAuth.layer)),
-    Layer.provideMerge(Layer.mergeAll(memory.layer, RunEvents.layer, Approvals.layer, BotUsers.layer, Camofox.layer)),
+    Layer.provideMerge(Layer.mergeAll(memory.layer, RunEvents.layer, Approvals.layer, BotUsers.layer, Camofox.layer, Updates.layer)),
     Layer.provideMerge(ProviderRegistry.layer),
     Layer.provideMerge(Layer.mergeAll(BotRepo.layer, ConversationRepo.layer, IntegrationRepo.layer, Settings.layer, TeamRepo.layer)),
     Layer.provideMerge(model),
