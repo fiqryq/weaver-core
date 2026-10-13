@@ -60,7 +60,7 @@ if [ -n "$LIST" ]; then
 fi
 [ -n "$FILE" ] || die "say which backup to restore, for example: sudo weaver-restore $BACKUP_DIR/weaver-backup-….tar.gz (--list shows them)"
 [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || die "WEAVER_RESTORE_TIMEOUT must be a number of seconds"
-id "$SERVICE_USER" >/dev/null 2>&1 && [ -x "$BOT_USER_HELPER" ] && [ -f "$ENV_FILE" ] \
+{ id "$SERVICE_USER" >/dev/null 2>&1 && [ -x "$BOT_USER_HELPER" ] && [ -f "$ENV_FILE" ]; } \
   || die "Weaver isn't installed here yet; run install.sh first, then restore"
 command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is missing (apt-get install sqlite3)"
 
@@ -162,7 +162,7 @@ for dir in weaver-backup "${DATA_DIR#/}/bots" "${MEMORY_HOME#/}" "${BROWSER_HOME
     [ ! -L "$path" ] || die "$FILE has a symlink at /${path#"$STAGE"/}, so it wasn't made by weaver-backup"
   done
 done
-[ -f "$STAGE/weaver-backup/weaver.db" ] && [ ! -L "$STAGE/weaver-backup/weaver.db" ] || die "$FILE has no database copy"
+{ [ -f "$STAGE/weaver-backup/weaver.db" ] && [ ! -L "$STAGE/weaver-backup/weaver.db" ]; } || die "$FILE has no database copy"
 [ "$(sqlite3 "$STAGE/weaver-backup/weaver.db" 'PRAGMA quick_check;')" = ok ] \
   || die "the database in $FILE failed its integrity check"
 STAGED_DATA="$STAGE${DATA_DIR}"
@@ -208,7 +208,7 @@ if [ -d "$STAGED_MEMORY" ]; then
   done
   if [ -d "$MEMORY_HOME/.basic-memory" ]; then
     for db in "$STAGE"/weaver-backup/memory-index/*.db; do
-      [ -f "$db" ] && [ ! -L "$db" ] || continue
+      { [ -f "$db" ] && [ ! -L "$db" ]; } || continue
       mv -f -- "$db" "$MEMORY_HOME/.basic-memory/${db##*/}"
     done
   fi

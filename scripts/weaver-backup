@@ -123,7 +123,7 @@ $MEMORY_HOME/basic-memory-projects/"
       *) say "Not included: the memory project in $project (only projects in $MEMORY_HOME are backed up)."; continue ;;
     esac
     case "$top" in .basic-memory | . | ..) continue ;; esac
-    [ -d "$MEMORY_HOME/$top" ] && [ ! -L "$MEMORY_HOME/$top" ] || continue
+    { [ -d "$MEMORY_HOME/$top" ] && [ ! -L "$MEMORY_HOME/$top" ]; } || continue
     case " ${MEMBERS[*]} " in *" ${MEMORY_HOME#/}/$top "*) continue ;; esac
     MEMBERS+=("${MEMORY_HOME#/}/$top")
   done <<<"$PROJECTS"
