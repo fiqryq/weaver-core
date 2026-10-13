@@ -1,6 +1,6 @@
 import { Context, Effect, Layer, Schema } from "effect"
 import { SqlClient } from "effect/sql"
-import { nowIso } from "../../platform/lib/util.ts"
+import { nowIso, orDieWithLog } from "../../platform/lib/util.ts"
 import { Team, TeamMember, TeamNotFound, type TeamStatus, TeamStatus as TeamStatusSchema, TeamTask } from "./Team.ts"
 
 interface TeamRow {
@@ -89,11 +89,11 @@ export class TeamRepo extends Context.Service<TeamRepo, {
 
       const list = sql<TeamRow>`SELECT * FROM teams ORDER BY created_at`.pipe(
         Effect.map((rows) => rows.map(fromRow)),
-        Effect.orDie
+        orDieWithLog
       )
 
       const get = Effect.fn("TeamRepo.get")(function*(id: string) {
-        const rows = yield* sql<TeamRow>`SELECT * FROM teams WHERE id = ${id}`.pipe(Effect.orDie)
+        const rows = yield* sql<TeamRow>`SELECT * FROM teams WHERE id = ${id}`.pipe(orDieWithLog)
         const row = rows[0]
         if (row === undefined) return yield* new TeamNotFound({ id })
         return fromRow(row)
@@ -116,8 +116,8 @@ export class TeamRepo extends Context.Service<TeamRepo, {
             created_at: now,
             updated_at: now
           })
-        }`.pipe(Effect.orDie)
-        return yield* Effect.orDie(get(id))
+        }`.pipe(orDieWithLog)
+        return yield* orDieWithLog(get(id))
       })
 
       const update = Effect.fn("TeamRepo.update")(function*(id: string, patch: TeamPatch) {
@@ -129,23 +129,23 @@ export class TeamRepo extends Context.Service<TeamRepo, {
         if (patch.members !== undefined) changes.members = JSON.stringify(patch.members)
         if (patch.status !== undefined) changes.status = patch.status
         if (patch.task !== undefined) changes.task = patch.task === null ? null : JSON.stringify(patch.task)
-        yield* sql`UPDATE teams SET ${sql.update(changes)} WHERE id = ${id}`.pipe(Effect.orDie)
+        yield* sql`UPDATE teams SET ${sql.update(changes)} WHERE id = ${id}`.pipe(orDieWithLog)
         return yield* get(id)
       })
 
-      const remove = (id: string) => sql`DELETE FROM teams WHERE id = ${id}`.pipe(Effect.asVoid, Effect.orDie)
+      const remove = (id: string) => sql`DELETE FROM teams WHERE id = ${id}`.pipe(Effect.asVoid, orDieWithLog)
 
       const subgroupsOf = (id: string) =>
         sql<TeamRow>`SELECT * FROM teams WHERE parent_team_id = ${id} ORDER BY created_at`.pipe(
           Effect.map((rows) => rows.map(fromRow)),
-          Effect.orDie
+          orDieWithLog
         )
 
       const removeMember = Effect.fn("TeamRepo.removeMember")(function*(botId: string) {
         const changed: Array<Team> = []
         for (const team of yield* list) {
           if (!team.members.some((member) => member.botId === botId)) continue
-          changed.push(yield* Effect.orDie(update(team.id, { members: team.members.filter((member) => member.botId !== botId) })))
+          changed.push(yield* orDieWithLog(update(team.id, { members: team.members.filter((member) => member.botId !== botId) })))
         }
         return changed
       })
@@ -158,7 +158,7 @@ export class TeamRepo extends Context.Service<TeamRepo, {
             updated_at = ${now}
           WHERE status = 'working' RETURNING id`).pipe(
           Effect.map((rows) => rows.length),
-          Effect.orDie
+          orDieWithLog
         )
 
       return TeamRepo.of({ list, get, create, update, remove, subgroupsOf, removeMember, markInterrupted })

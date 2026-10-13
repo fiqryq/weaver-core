@@ -1,6 +1,6 @@
 import { Context, Effect, Layer, Schema } from "effect"
 import { SqlClient } from "effect/sql"
-import { newId, nowIso } from "../../platform/lib/util.ts"
+import { newId, nowIso, orDieWithLog } from "../../platform/lib/util.ts"
 import {
   Conversation,
   ConversationKind,
@@ -151,14 +151,14 @@ export class ConversationRepo extends Context.Service<ConversationRepo, {
 
       const list = sql<ConversationRow>`SELECT * FROM conversations ORDER BY updated_at DESC`.pipe(
         Effect.flatMap((rows) => Effect.forEach(rows, toConversation)),
-        Effect.orDie
+        orDieWithLog
       )
 
       const get = Effect.fn("ConversationRepo.get")(function*(id: string) {
-        const rows = yield* sql<ConversationRow>`SELECT * FROM conversations WHERE id = ${id}`.pipe(Effect.orDie)
+        const rows = yield* sql<ConversationRow>`SELECT * FROM conversations WHERE id = ${id}`.pipe(orDieWithLog)
         const row = rows[0]
         if (row === undefined) return yield* new ConversationNotFound({ id })
-        return yield* Effect.orDie(toConversation(row))
+        return yield* orDieWithLog(toConversation(row))
       })
 
       const setBots = (conversationId: string, botIds: ReadonlyArray<string>) =>
@@ -189,8 +189,8 @@ export class ConversationRepo extends Context.Service<ConversationRepo, {
               })
             }`
             yield* setBots(id, input.botIds)
-          })).pipe(Effect.orDie)
-          return yield* Effect.orDie(get(id))
+          })).pipe(orDieWithLog)
+          return yield* orDieWithLog(get(id))
         })
 
       const create = Effect.fn("ConversationRepo.create")(function*(input: NewConversation) {
@@ -203,8 +203,8 @@ export class ConversationRepo extends Context.Service<ConversationRepo, {
           WHERE kind = 'handoff' AND requester_bot_id = ${requesterId} AND id IN (
             SELECT conversation_id FROM conversation_bots WHERE bot_id = ${targetId}
           )
-          ORDER BY created_at LIMIT 1`.pipe(Effect.orDie)
-        if (rows[0] !== undefined) return yield* Effect.orDie(toConversation(rows[0]))
+          ORDER BY created_at LIMIT 1`.pipe(orDieWithLog)
+        if (rows[0] !== undefined) return yield* orDieWithLog(toConversation(rows[0]))
         return yield* insert({ title, botIds: [requesterId, targetId], requesterBotId: requesterId })
       })
 
@@ -215,7 +215,7 @@ export class ConversationRepo extends Context.Service<ConversationRepo, {
             SELECT conversation_id FROM conversation_bots WHERE bot_id = ${botId}
           ))`.pipe(
           Effect.flatMap((rows) => Effect.forEach(rows, toConversation)),
-          Effect.orDie
+          orDieWithLog
         )
 
       const update = Effect.fn("ConversationRepo.update")(function*(
@@ -229,13 +229,13 @@ export class ConversationRepo extends Context.Service<ConversationRepo, {
             yield* sql`UPDATE conversations SET title = ${input.title}, updated_at = ${now} WHERE id = ${id}`
           }
           if (input.botIds !== undefined) yield* setBots(id, input.botIds)
-        })).pipe(Effect.orDie)
+        })).pipe(orDieWithLog)
         return yield* get(id)
       })
 
       const remove = Effect.fn("ConversationRepo.remove")(function*(id: string) {
         yield* get(id)
-        yield* sql`DELETE FROM conversations WHERE id = ${id}`.pipe(Effect.orDie)
+        yield* sql`DELETE FROM conversations WHERE id = ${id}`.pipe(orDieWithLog)
       })
 
       const messages = (conversationId: string, after?: number) =>
@@ -244,13 +244,13 @@ export class ConversationRepo extends Context.Service<ConversationRepo, {
           WHERE conversation_id = ${conversationId} AND seq > ${after ?? 0}
           ORDER BY seq`.pipe(
           Effect.map((rows) => rows.map(messageFromRow)),
-          Effect.orDie
+          orDieWithLog
         )
 
       const getMessage = (id: string) =>
         sql<MessageRow>`SELECT * FROM messages WHERE id = ${id}`.pipe(
           Effect.map((rows) => (rows[0] === undefined ? undefined : messageFromRow(rows[0]))),
-          Effect.orDie
+          orDieWithLog
         )
 
       const insertMessage = Effect.fn("ConversationRepo.insertMessage")(function*(input: NewMessage) {
@@ -276,7 +276,7 @@ export class ConversationRepo extends Context.Service<ConversationRepo, {
             })
           }`
           yield* sql`UPDATE conversations SET updated_at = ${now} WHERE id = ${input.conversationId}`
-        })).pipe(Effect.orDie)
+        })).pipe(orDieWithLog)
         const message = yield* getMessage(id)
         return message!
       })
@@ -297,7 +297,7 @@ export class ConversationRepo extends Context.Service<ConversationRepo, {
                 UPDATE messages SET finished_at = ${now}
                 WHERE id = ${id} AND role = 'assistant' AND finished_at IS NULL`
             }
-          })).pipe(Effect.orDie)
+          })).pipe(orDieWithLog)
         }
         return yield* getMessage(id)
       })
@@ -305,7 +305,7 @@ export class ConversationRepo extends Context.Service<ConversationRepo, {
       const deleteMessages = (ids: ReadonlyArray<string>) =>
         ids.length === 0
           ? Effect.void
-          : sql`DELETE FROM messages WHERE ${sql.in("id", ids)}`.pipe(Effect.asVoid, Effect.orDie)
+          : sql`DELETE FROM messages WHERE ${sql.in("id", ids)}`.pipe(Effect.asVoid, orDieWithLog)
 
       const markInterrupted = Effect.flatMap(nowIso, (now) =>
         sql<{ id: string }>`
@@ -313,7 +313,7 @@ export class ConversationRepo extends Context.Service<ConversationRepo, {
             finished_at = CASE WHEN role = 'assistant' THEN COALESCE(finished_at, ${now}) END
           WHERE status = 'streaming' RETURNING id`).pipe(
           Effect.map((rows) => rows.length),
-          Effect.orDie
+          orDieWithLog
         )
 
       return ConversationRepo.of({

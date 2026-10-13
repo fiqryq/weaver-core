@@ -1,6 +1,6 @@
 import { Context, Effect, Layer, Schema } from "effect"
 import { SqlClient } from "effect/sql"
-import { decodeStringArray, newId, nowIso } from "../../platform/lib/util.ts"
+import { decodeStringArray, newId, nowIso, orDieWithLog } from "../../platform/lib/util.ts"
 import {
   ApprovalMode,
   Bot,
@@ -84,11 +84,11 @@ export class BotRepo extends Context.Service<BotRepo, {
 
       const list = sql<BotRow>`SELECT * FROM bots ORDER BY created_at`.pipe(
         Effect.map((rows) => rows.map(fromRow)),
-        Effect.orDie
+        orDieWithLog
       )
 
       const get = Effect.fn("BotRepo.get")(function*(id: string) {
-        const rows = yield* sql<BotRow>`SELECT * FROM bots WHERE id = ${id}`.pipe(Effect.orDie)
+        const rows = yield* sql<BotRow>`SELECT * FROM bots WHERE id = ${id}`.pipe(orDieWithLog)
         const row = rows[0]
         if (row === undefined) return yield* new BotNotFound({ id })
         return fromRow(row)
@@ -118,8 +118,8 @@ export class BotRepo extends Context.Service<BotRepo, {
             created_at: now,
             updated_at: now
           })
-        }`.pipe(Effect.orDie)
-        return yield* Effect.orDie(get(id))
+        }`.pipe(orDieWithLog)
+        return yield* orDieWithLog(get(id))
       })
 
       const update = Effect.fn("BotRepo.update")(function*(id: string, input: BotUpdate) {
@@ -140,9 +140,9 @@ export class BotRepo extends Context.Service<BotRepo, {
         if (input.teammateIds !== undefined) changes.teammate_ids = JSON.stringify([...new Set(input.teammateIds)])
         if (input.librarySkills !== undefined) changes.library_skills = JSON.stringify([...new Set(input.librarySkills)])
         if (input.memoryProject !== undefined) changes.memory_project = input.memoryProject.trim()
-        yield* sql`UPDATE bots SET ${sql.update(changes)} WHERE id = ${id}`.pipe(Effect.orDie)
+        yield* sql`UPDATE bots SET ${sql.update(changes)} WHERE id = ${id}`.pipe(orDieWithLog)
         if (input.name !== undefined) {
-          yield* sql`UPDATE messages SET sender_name = ${input.name.trim()} WHERE bot_id = ${id}`.pipe(Effect.orDie)
+          yield* sql`UPDATE messages SET sender_name = ${input.name.trim()} WHERE bot_id = ${id}`.pipe(orDieWithLog)
         }
         return yield* get(id)
       })
@@ -167,7 +167,7 @@ export class BotRepo extends Context.Service<BotRepo, {
             )`
           yield* sql`DELETE FROM conversation_bots WHERE bot_id = ${id}`
           yield* sql`DELETE FROM bots WHERE id = ${id}`
-        })).pipe(Effect.orDie)
+        })).pipe(orDieWithLog)
       })
 
       const assignLibrarySkill = Effect.fn("BotRepo.assignLibrarySkill")(function*(
@@ -188,7 +188,7 @@ export class BotRepo extends Context.Service<BotRepo, {
             changed = true
           }
           return changed
-        })).pipe(Effect.orDie)
+        })).pipe(orDieWithLog)
       })
 
       return BotRepo.of({ list, get, create, update, remove, assignLibrarySkill })
