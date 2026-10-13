@@ -28,7 +28,6 @@ describe("Files.ts symlink TOCTOU protection", () => {
         Effect.exit(readTool.run({ path: "link.txt" }))
       )
       
-      // Should fail due to O_NOFOLLOW
       expect(Exit.isFailure(exit)).toBe(true)
     } finally {
       await rm(workspace, { recursive: true, force: true })
@@ -114,9 +113,10 @@ describe("Files.ts symlink TOCTOU protection", () => {
         Effect.exit(readTool.run({ path: "link.txt" }))
       )
       
-      // With O_NOFOLLOW, even safe symlinks will be rejected at the final component
-      // This is the security tradeoff - we reject all symlinks at the final path
-      expect(Exit.isFailure(exit)).toBe(true)
+      expect(Exit.isSuccess(exit)).toBe(true)
+      if (Exit.isSuccess(exit)) {
+        expect(exit.value).toContain("Safe content")
+      }
     } finally {
       await rm(workspace, { recursive: true, force: true })
     }
