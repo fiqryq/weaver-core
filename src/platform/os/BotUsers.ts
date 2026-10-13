@@ -1,12 +1,11 @@
 import { Context, Duration, Effect, Layer, Option, Schema, Semaphore, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { AppConfig, perBotUsers } from "../../config/Config.ts"
+import { fallbackPath } from "../lib/util.ts"
 
 export class BotUserError extends Schema.TaggedError<BotUserError>()("BotUserError", {
   message: Schema.String
 }) {}
-
-const fallbackPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 /** Bot IDs are UUIDs; anything else never reaches sudo. */
 export const isValidBotId = (botId: string): boolean => /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/.test(botId)
