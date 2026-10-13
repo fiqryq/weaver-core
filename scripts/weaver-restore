@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+# Puts back a backup made by weaver-backup, on the same VPS or on a new one where install.sh has run.
+# Run as root:
+#
+#   sudo weaver-restore FILE          restore FILE (shows what's in it and asks first)
+#   sudo weaver-restore --yes FILE    restore without asking
+#   sudo weaver-restore --list        list the backups in /var/lib/weaver/backups
+#   sudo weaver-restore --yes -       read the backup from standard input, so from your Mac:
+#                                     ssh new-vps 'sudo weaver-restore --yes -' < weaver-backup.tar.gz
+#
+# It replaces the bots, chats, settings, skills, workspaces and memory here with the backup's. What was
+# here moves to /var/lib/weaver/backups/before-restore-<date>-<time> instead of being deleted, and comes
+# back by itself if the restore fails partway. Each bot gets its Linux user again and its files their
+# owners. This server keeps its own tokens: a Mac connected to it stays connected, and on a new VPS the
+# link from weaver-connect connects the Mac.
+set -euo pipefail
+umask 077
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+DATA_DIR=/var/lib/weaver
+BACKUP_DIR=$DATA_DIR/backups
+SERVICE_USER=weaver
+MEMORY_HOME=/home/weaver
+BROWSER_USER=weaver-browser
+BROWSER_HOME=/var/lib/weaver-browser
+BOTS_GROUP=weaver-bots
+BOT_USER_HELPER=/usr/local/lib/weaver/weaver-bot-user
+ENV_FILE=/etc/weaver/agent.env
+LOCK_FILE=/run/lock/weaver-backup.lock
+TIMEOUT="${WEAVER_RESTORE_TIMEOUT:-60}"
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'weaver-restore: %s\n' "$*" >&2; exit 1; }
+
+YES=""
+LIST=""
+FILE=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -y | --yes) YES=1 ;;
+    --list) LIST=1 ;;
+    -h | --help) sed -n '2,15s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    -) [ -z "$FILE" ] || die "give one backup file"; FILE=- ;;
+    -*) die "unknown option $1 (try --help)" ;;
+    *) [ -z "$FILE" ] || die "give one backup file"; FILE="$1" ;;
+  esac
+  shift
+done
+[ "$(id -u)" -eq 0 ] || die "run this as root, for example: sudo weaver-restore FILE"
+
+if [ -n "$LIST" ]; then
+  found=""
+  for backup in "$BACKUP_DIR"/weaver-backup-*.tar.gz; do
+    [ -f "$backup" ] || continue
+    found=1
+    printf '%s  %s\n' "$(du -h "$backup" | cut -f1)" "$backup"
+  done
+  [ -n "$found" ] || say "There are no backups in $BACKUP_DIR yet. Make one with: sudo weaver-backup"
+  exit 0
+fi
+[ -n "$FILE" ] || die "say which backup to restore, for example: sudo weaver-restore $BACKUP_DIR/weaver-backup-….tar.gz (--list shows them)"
+[[ "$TIMEOUT" =~ ^[0-9]+$ ]] || die "WEAVER_RESTORE_TIMEOUT must be a number of seconds"
+{ id "$SERVICE_USER" >/dev/null 2>&1 && [ -x "$BOT_USER_HELPER" ] && [ -f "$ENV_FILE" ]; } \
+  || die "Weaver isn't installed here yet; run install.sh first, then restore"
+command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is missing (apt-get install sqlite3)"
+
+exec 9>"$LOCK_FILE"
+flock -w 600 9 || die "another backup or restore is still running"
+
+# Work next to the data, so moving things into place is a rename and needs no extra space.
+WORK="$(mktemp -d "$DATA_DIR/.restore.XXXXXX")"
+STAMP="$(date +%Y-%m-%d-%H%M%S)"
+ASIDE="$BACKUP_DIR/before-restore-$STAMP"
+SWAPPING=""
+MOVED=()
+PLACED=()
+STOPPED=()
+
+# Moves $1 under $ASIDE, at the same path, so it can be put back.
+put_aside() {
+  local path="$1"
+  [ -e "$path" ] || [ -L "$path" ] || return 0
+  mkdir -p "$(dirname "$ASIDE$path")"
+  mv -T -- "$path" "$ASIDE$path"
+  MOVED+=("$path")
+}
+# Moves the restored $1 to $2.
+place() {
+  mv -T -- "$1" "$2"
+  PLACED+=("$2")
+}
+# shellcheck disable=SC2329 # run by finish
+roll_back() {
+  local i
+  set +e
+  echo "The restore failed partway; putting back what was here." >&2
+  for ((i = ${#PLACED[@]} - 1; i >= 0; i--)); do rm -rf -- "${PLACED[i]}"; done
+  for ((i = ${#MOVED[@]} - 1; i >= 0; i--)); do mv -T -- "$ASIDE${MOVED[i]}" "${MOVED[i]}"; done
+  rm -rf -- "$ASIDE"
+}
+# shellcheck disable=SC2329 # run by the EXIT trap
+finish() {
+  local status=$?
+  if [ -n "$SWAPPING" ] && [ "$status" -ne 0 ]; then roll_back; fi
+  if [ -n "$SWAPPING" ] && [ "${#STOPPED[@]}" -gt 0 ]; then systemctl start "${STOPPED[@]}" || true; fi
+  rm -rf -- "$WORK"
+}
+trap finish EXIT
+
+ARCHIVE="$FILE"
+if [ "$FILE" = - ]; then
+  [ -n "$YES" ] || die "add --yes to restore from standard input (there's no way to ask first)"
+  [ ! -t 0 ] || die "standard input is a terminal; pipe the backup in, like: weaver-restore --yes - < backup.tar.gz"
+  ARCHIVE="$WORK/backup.tar.gz"
+  cat > "$ARCHIVE"
+fi
+[ -f "$ARCHIVE" ] || die "$FILE isn't a file"
+
+say "Checking $FILE"
+tar -tvzf "$ARCHIVE" > "$WORK/listing" 2>/dev/null || die "$FILE isn't a backup tar can read (it may be cut short)"
+MANIFEST="$(tar -xzOf "$ARCHIVE" weaver-backup/manifest 2>/dev/null)" \
+  || die "$FILE has no weaver-backup/manifest, so it wasn't made by weaver-backup"
+field() { sed -n "s/^$1=//p" <<<"$MANIFEST" | head -n1; }
+[ "$(field format)" = 1 ] || die "$FILE was made by a newer weaver-backup (format $(field format)); run weaver-update first"
+SIZE="$(awk '{ total += $3 } END { printf "%d", total }' "$WORK/listing")"
+FREE="$(df -PB1 "$DATA_DIR" | awk 'NR == 2 { print $4 }')"
+[ "$FREE" -gt "$SIZE" ] || die "unpacking needs $((SIZE / 1048576)) MB and $DATA_DIR has $((FREE / 1048576)) MB free"
+
+setting() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -n1; }
+LISTEN="$(setting WEAVER_LISTEN)"
+LISTEN="${LISTEN:-:7700}"
+HOST="${LISTEN%:*}"
+case "$HOST" in "" | 0.0.0.0 | "[::]" | "::") HOST=127.0.0.1 ;; esac
+HEALTH_URL="http://$HOST:${LISTEN##*:}/v1/health"
+health() { curl -fsS --max-time 3 "$HEALTH_URL" 2>/dev/null; }
+RUNNING="$(health | sed -n 's/.*"version":"\([^"]*\)".*/\1/p' || true)"
+
+say "Made on $(field host) at $(field created): $(field bots) bots, memory: $(field memory), browser logins: $(field browser)."
+if [ -n "$RUNNING" ] && [ "$(field server_version)" != unknown ] && [ "$(field server_version)" != "$RUNNING" ]; then
+  say "It comes from agent server $(field server_version) and this one runs $RUNNING. If the server doesn't start"
+  say "afterwards, run sudo weaver-update and restore again."
+fi
+say "This replaces the bots, chats, settings, skills, workspaces and memory on this server."
+say "What's here now moves to $ASIDE."
+if [ -z "$YES" ]; then
+  [ -r /dev/tty ] || die "add --yes to restore without being asked"
+  read -r -p "Restore it? [y/N] " answer < /dev/tty
+  case "$answer" in y | Y | yes | YES) ;; *) say "Nothing was changed."; exit 1 ;; esac
+fi
+
+say "Unpacking"
+STAGE="$WORK/stage"
+mkdir "$STAGE"
+# Owners are set below; user IDs from the old machine mean nothing here.
+tar -xzf "$ARCHIVE" -C "$STAGE" --no-same-owner || die "couldn't unpack $FILE"
+# Everything below is moved by these paths, so none of their folders may be a symlink out of the stage.
+for dir in weaver-backup "${DATA_DIR#/}/bots" "${MEMORY_HOME#/}" "${BROWSER_HOME#/}"; do
+  path="$STAGE"
+  IFS=/ read -ra parts <<<"$dir"
+  for part in "${parts[@]}"; do
+    path="$path/$part"
+    [ ! -L "$path" ] || die "$FILE has a symlink at /${path#"$STAGE"/}, so it wasn't made by weaver-backup"
+  done
+done
+{ [ -f "$STAGE/weaver-backup/weaver.db" ] && [ ! -L "$STAGE/weaver-backup/weaver.db" ]; } || die "$FILE has no database copy"
+[ "$(sqlite3 "$STAGE/weaver-backup/weaver.db" 'PRAGMA quick_check;')" = ok ] \
+  || die "the database in $FILE failed its integrity check"
+STAGED_DATA="$STAGE${DATA_DIR}"
+STAGED_MEMORY="$STAGE${MEMORY_HOME}"
+STAGED_BROWSER="$STAGE${BROWSER_HOME}"
+[ -d "$STAGED_DATA" ] || mkdir -p "$STAGED_DATA"
+RESTORE_BROWSER=""
+if [ -d "$STAGED_BROWSER" ]; then
+  if id "$BROWSER_USER" >/dev/null 2>&1; then
+    RESTORE_BROWSER=1
+  else
+    say "Skipping the browser logins: this server has no Camoufox browser (install.sh with BROWSER_ENGINE=camofox)."
+  fi
+fi
+
+say "Stopping Weaver"
+SERVICES=(weaver-agent weaver-memory-proxy weaver-memory)
+[ -z "$RESTORE_BROWSER" ] || SERVICES+=(weaver-camofox)
+for service in "${SERVICES[@]}"; do
+  if systemctl is-active --quiet "$service"; then
+    systemctl stop "$service"
+    STOPPED=("$service" "${STOPPED[@]}")
+  fi
+done
+
+say "Putting the backup in place"
+SWAPPING=1
+mkdir -p "$ASIDE"
+chmod 700 "$ASIDE"
+mapfile -d '' CURRENT < <(find "$DATA_DIR" -mindepth 1 -maxdepth 1 ! -name backups ! -path "$WORK" -print0)
+for path in "${CURRENT[@]}"; do put_aside "$path"; done
+mapfile -d '' RESTORED < <(find "$STAGED_DATA" -mindepth 1 -maxdepth 1 ! -name backups -print0)
+for path in "${RESTORED[@]}"; do place "$path" "$DATA_DIR/${path##*/}"; done
+place "$STAGE/weaver-backup/weaver.db" "$DATA_DIR/weaver.db"
+
+MEMORY_PLACED=()
+if [ -d "$STAGED_MEMORY" ]; then
+  mapfile -d '' RESTORED < <(find "$STAGED_MEMORY" -mindepth 1 -maxdepth 1 -print0)
+  for path in "${RESTORED[@]}"; do
+    put_aside "$MEMORY_HOME/${path##*/}"
+    place "$path" "$MEMORY_HOME/${path##*/}"
+    MEMORY_PLACED+=("$MEMORY_HOME/${path##*/}")
+  done
+  if [ -d "$MEMORY_HOME/.basic-memory" ]; then
+    for db in "$STAGE"/weaver-backup/memory-index/*.db; do
+      { [ -f "$db" ] && [ ! -L "$db" ]; } || continue
+      mv -f -- "$db" "$MEMORY_HOME/.basic-memory/${db##*/}"
+    done
+  fi
+fi
+if [ -n "$RESTORE_BROWSER" ]; then
+  put_aside "$BROWSER_HOME"
+  place "$STAGED_BROWSER" "$BROWSER_HOME"
+fi
+
+say "Giving files their owners back"
+mapfile -d '' RESTORED < <(find "$DATA_DIR" -mindepth 1 -maxdepth 1 ! -name backups ! -path "$WORK" -print0)
+for path in "${RESTORED[@]}"; do chown -R -h "$SERVICE_USER:$SERVICE_USER" "$path"; done
+chown "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
+chmod 711 "$DATA_DIR"
+# Only the bots' workspaces and homes are open to their users (see install.sh and weaver-bot-user).
+find "$DATA_DIR" -mindepth 1 -maxdepth 1 ! -name bots ! -name backups ! -path "$WORK" -exec chmod -R go-rwx {} +
+mkdir -p "$DATA_DIR/bots"
+chown "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR/bots"
+chmod 711 "$DATA_DIR/bots"
+BOT_COUNT=0
+for bot_dir in "$DATA_DIR"/bots/*; do
+  if [ ! -d "$bot_dir" ] || [ -L "$bot_dir" ]; then continue; fi
+  bot_id="${bot_dir##*/}"
+  if ! [[ "$bot_id" =~ ^[A-Za-z0-9-]{1,64}$ ]]; then
+    say "Skipping $bot_dir: not a bot id."
+    continue
+  fi
+  find "$bot_dir" -mindepth 1 -maxdepth 1 ! -name workspace ! -name home -exec chmod -R go-rwx {} +
+  # The workspace is the server's now, so this hands all of it to the bot's user and sets its ACLs.
+  bot_user="$("$BOT_USER_HELPER" ensure "$bot_id")"
+  if [ -d "$bot_dir/home" ] && [ ! -L "$bot_dir/home" ]; then
+    chown -R -h "$bot_user:$bot_user" "$bot_dir/home"
+  fi
+  BOT_COUNT=$((BOT_COUNT + 1))
+done
+for path in "${MEMORY_PLACED[@]}"; do chown -R -h "$SERVICE_USER:$SERVICE_USER" "$path"; done
+if [ -n "$RESTORE_BROWSER" ]; then
+  chown -R -h "$BROWSER_USER:$BROWSER_USER" "$BROWSER_HOME"
+  chmod 700 "$BROWSER_HOME"
+fi
+SWAPPING=""
+
+# Users of bots that aren't in the backup.
+for bot_user in $(getent group "$BOTS_GROUP" | cut -d: -f4 | tr ',' ' '); do
+  home="$(getent passwd "$bot_user" | cut -d: -f6)"
+  case "$home" in "$DATA_DIR"/bots/*/home) ;; *) continue ;; esac
+  bot_id="${home#"$DATA_DIR"/bots/}"
+  bot_id="${bot_id%/home}"
+  [ ! -d "$DATA_DIR/bots/$bot_id" ] || continue
+  "$BOT_USER_HELPER" remove "$bot_id" || say "Couldn't remove $bot_user, the user of a bot that isn't in the backup."
+done
+
+if [ "${#STOPPED[@]}" -gt 0 ]; then
+  say "Starting Weaver"
+  systemctl start "${STOPPED[@]}"
+fi
+if [[ " ${STOPPED[*]} " == *" weaver-agent "* ]]; then
+  deadline=$((SECONDS + TIMEOUT))
+  until health >/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "The agent server didn't answer $HEALTH_URL within ${TIMEOUT}s. Check: journalctl -u weaver-agent -n 50" >&2
+      echo "What was here before is in $ASIDE." >&2
+      exit 1
+    fi
+    sleep 1
+  done
+fi
+
+say ""
+say "Restored $BOT_COUNT bots from $FILE."
+say "What was here before is in $ASIDE; delete it once everything looks right:"
+say "  sudo rm -rf $ASIDE"
+say "On a new VPS, connect your Mac with the link from: sudo weaver-connect"

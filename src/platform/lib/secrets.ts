@@ -33,7 +33,7 @@ export const redactSecrets = (text: string): string => {
   result = result.replace(pemKeyPattern, "[REDACTED:PRIVATE_KEY]")
 
   // Redact common API key patterns
-  result = result.replace(/\b(sk-)[a-zA-Z0-9]{20,}/gi, "[REDACTED:$1***]")
+  result = result.replace(/\b(sk-)[a-zA-Z0-9_-]{20,}/gi, "[REDACTED:$1***]")
   result = result.replace(/\b(ghp_)[a-zA-Z0-9]{36,}/gi, "[REDACTED:$1***]")
   result = result.replace(/\b(ghs_)[a-zA-Z0-9]{36,}/gi, "[REDACTED:$1***]")
   result = result.replace(/\b(xox[pbar]-)[a-zA-Z0-9-]{10,}/gi, "[REDACTED:$1***]")

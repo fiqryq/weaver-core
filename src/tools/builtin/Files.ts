@@ -1,6 +1,5 @@
 import { Effect, Schema } from "effect"
 import { chmod, chown, lstat, mkdir, open, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
-import { constants as fsConstants } from "node:fs"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { type AgentTool, decodeParams, jsonSchemaOf, shorten, ToolFailure } from "../AgentTool.ts"
 
@@ -20,24 +19,19 @@ export const formatBytes = (bytes: number): string =>
 
 const isBinary = (bytes: Uint8Array): boolean => bytes.subarray(0, binarySniffBytes).includes(0)
 
-/** 
+/**
  * Reads at most `limit` bytes from the start of a regular file, with the file's full size.
- * Opens with O_NOFOLLOW and verifies the realpath to prevent symlink TOCTOU attacks.
+ * Rechecks where the path resolves after opening it, so a link swapped in after
+ * `resolveInWorkspace` can't lead outside the workspace.
  */
 const readStart = async (target: string, limit: number, workspace: string): Promise<{ bytes: Uint8Array; size: number }> => {
-  // Open with O_NOFOLLOW to fail if target is a symlink at the final component
-  const handle = await open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+  const handle = await open(target, "r")
   try {
-    // Now verify the resolved path is still inside the workspace
-    const resolved = await realpath(target)
-    if (!isInside(workspace, resolved)) {
-      throw new Error("path resolves outside workspace")
-    }
-    
+    const [root, resolved] = await Promise.all([realpath(workspace), realpath(target)])
+    if (!isInside(root, resolved)) throw new Error("path resolves outside workspace")
     const info = await handle.stat()
     if (info.isDirectory()) throw Object.assign(new Error("is a directory"), { code: "EISDIR" })
     if (!info.isFile()) throw new Error("not a regular file")
-    
     const buffer = new Uint8Array(Math.min(info.size, limit))
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
     return { bytes: buffer.subarray(0, bytesRead), size: info.size }
