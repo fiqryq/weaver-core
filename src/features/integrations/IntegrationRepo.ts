@@ -1,6 +1,8 @@
 import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js"
 import { Context, Effect, Layer, Semaphore } from "effect"
 import { SqlClient } from "effect/sql"
+import { AppConfig } from "../../config/Config.ts"
+import { decrypt, encrypt, isEncrypted } from "../../platform/lib/crypto.ts"
 import { decodeStringArray, decodeStringRecord, newId, nowIso } from "../../platform/lib/util.ts"
 import {
   Integration,
@@ -46,8 +48,27 @@ interface IntegrationRow {
   readonly updated_at: string
 }
 
-const decodeOAuth = (raw: string): OAuthData => {
+/**
+ * Decodes OAuth data, transparently decrypting if encryption is enabled.
+ * Handles migration from plaintext to encrypted storage.
+ */
+const decodeOAuth = (raw: string, encryptionKey: string): OAuthData => {
+  if (!raw || raw === "{}") return {}
+  
   try {
+    // If encryption is enabled and data looks encrypted, decrypt it first
+    if (encryptionKey && isEncrypted(raw)) {
+      try {
+        const decrypted = decrypt(raw, encryptionKey)
+        const parsed: unknown = JSON.parse(decrypted)
+        return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as OAuthData : {}
+      } catch {
+        // Decryption failed - might be corrupted or wrong key
+        // Fall through to try parsing as plaintext
+      }
+    }
+    
+    // Try parsing as plaintext (for migration or when encryption is disabled)
     const parsed: unknown = JSON.parse(raw)
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as OAuthData : {}
   } catch {
@@ -55,9 +76,25 @@ const decodeOAuth = (raw: string): OAuthData => {
   }
 }
 
-const fromRow = (row: IntegrationRow): Integration => {
+/**
+ * Encodes OAuth data, encrypting if encryption key is available.
+ */
+const encodeOAuth = (data: OAuthData, encryptionKey: string): string => {
+  const json = JSON.stringify(data)
+  if (encryptionKey) {
+    try {
+      return encrypt(json, encryptionKey)
+    } catch {
+      // Encryption failed - fall back to plaintext (shouldn't happen with valid key)
+      return json
+    }
+  }
+  return json
+}
+
+const fromRow = (row: IntegrationRow, encryptionKey: string): Integration => {
   const auth = row.auth === "oauth" ? "oauth" : "none"
-  const oauth = decodeOAuth(row.oauth)
+  const oauth = decodeOAuth(row.oauth, encryptionKey)
   return new Integration({
     id: row.id,
     name: row.name,
@@ -93,10 +130,12 @@ export class IntegrationRepo extends Context.Service<IntegrationRepo, {
     IntegrationRepo,
     Effect.gen(function*() {
       const sql = yield* SqlClient.SqlClient
+      const config = yield* AppConfig
+      const encryptionKey = config.encryptionKey
       const writes = Semaphore.makeUnsafe(1)
 
       const list = sql<IntegrationRow>`SELECT * FROM integrations ORDER BY created_at`.pipe(
-        Effect.map((rows) => rows.map(fromRow)),
+        Effect.map((rows) => rows.map((row) => fromRow(row, encryptionKey))),
         Effect.orDie
       )
 
@@ -107,7 +146,7 @@ export class IntegrationRepo extends Context.Service<IntegrationRepo, {
         return row
       })
 
-      const get = (id: string) => Effect.map(getRow(id), fromRow)
+      const get = (id: string) => Effect.map(getRow(id), (row) => fromRow(row, encryptionKey))
 
       const create = Effect.fn("IntegrationRepo.create")(function*(input: IntegrationCreate) {
         const id = newId()
@@ -157,12 +196,24 @@ export class IntegrationRepo extends Context.Service<IntegrationRepo, {
         yield* sql`DELETE FROM integrations WHERE id = ${id}`.pipe(Effect.orDie)
       })
 
-      const oauth = (id: string) => Effect.map(getRow(id), (row) => decodeOAuth(row.oauth))
+      const oauth = (id: string) => Effect.map(getRow(id), (row) => decodeOAuth(row.oauth, encryptionKey))
 
       const updateOAuth = Effect.fn("IntegrationRepo.updateOAuth")(
         function*(id: string, change: (data: OAuthData) => OAuthData) {
-          const next = change(yield* oauth(id))
-          yield* sql`UPDATE integrations SET oauth = ${JSON.stringify(next)} WHERE id = ${id}`.pipe(Effect.orDie)
+          const current = yield* oauth(id)
+          const next = change(current)
+          const encoded = encodeOAuth(next, encryptionKey)
+          yield* sql`UPDATE integrations SET oauth = ${encoded} WHERE id = ${id}`.pipe(Effect.orDie)
+          
+          // If we just migrated from plaintext to encrypted (encryption enabled + current was plaintext)
+          if (encryptionKey && current !== next) {
+            const row = yield* getRow(id)
+            // Check if the stored value was plaintext before this update
+            if (!isEncrypted(row.oauth)) {
+              yield* Effect.logInfo(`Migrated OAuth tokens to encrypted storage for integration ${id}`)
+            }
+          }
+          
           return next
         },
         writes.withPermit

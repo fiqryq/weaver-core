@@ -21,6 +21,8 @@ export interface AppConfigShape {
   readonly token: Redacted.Redacted<string>
   readonly host: string
   readonly port: number
+  /** Maximum request body size in bytes (default 10MB) */
+  readonly maxBodyBytes: number
   readonly display: string
   /** Basic Memory's MCP endpoint, shared by every bot with memory on. */
   readonly memory: Option.Option<{
@@ -69,6 +71,8 @@ export interface AppConfigShape {
   readonly skillCatalog: ReadonlyArray<string>
   /** Sent to GitHub when installing skills and reading the catalog; empty sends none. */
   readonly githubToken: Redacted.Redacted<string>
+  /** AES-256 encryption key for OAuth tokens at rest (32 bytes as 64 hex chars); empty disables encryption. */
+  readonly encryptionKey: string
 }
 
 export class AppConfig extends Context.Service<AppConfig, AppConfigShape>()("weaver/Config") {
@@ -83,6 +87,7 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigShape>()("wea
         })
       }
       const listen = yield* Config.String("WEAVER_LISTEN").pipe(Config.withDefault(":7700"))
+      const maxBodyBytes = yield* Config.Int("WEAVER_MAX_BODY_MB").pipe(Config.withDefault(10))
       const display = yield* Config.String("DISPLAY").pipe(Config.withDefault(":1"))
       const memoryUrl = yield* Config.option(Config.String("WEAVER_MEMORY_URL"))
       const memoryToken = yield* Config.String("WEAVER_MEMORY_TOKEN").pipe(Config.withDefault(""))
@@ -114,12 +119,14 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigShape>()("wea
       )
       const skillCatalog = yield* Config.String("WEAVER_SKILL_CATALOG").pipe(Config.withDefault(defaultSkillCatalog))
       const githubToken = yield* Config.Redacted("WEAVER_GITHUB_TOKEN").pipe(Config.withDefault(Redacted.make("")))
+      const encryptionKey = yield* Config.String("WEAVER_ENCRYPTION_KEY").pipe(Config.withDefault(""))
       const { host, port } = parseListen(listen)
       return AppConfig.of({
         dataDir,
         token,
         host,
         port,
+        maxBodyBytes: Math.max(maxBodyBytes, 1) * 1024 * 1024,
         display,
         memory: Option.map(
           Option.filter(memoryUrl, (url) => url.trim().length > 0),
@@ -143,7 +150,8 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigShape>()("wea
           : Option.none(),
         botUserHelper: botUserHelper.trim(),
         skillCatalog: skillCatalog.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0),
-        githubToken: Redacted.make(Redacted.value(githubToken).trim())
+        githubToken: Redacted.make(Redacted.value(githubToken).trim()),
+        encryptionKey: encryptionKey.trim()
       })
     })
   )
@@ -156,6 +164,7 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigShape>()("wea
         token: Redacted.make("test-token"),
         host: "127.0.0.1",
         port: 0,
+        maxBodyBytes: 10 * 1024 * 1024,
         display: ":1",
         memory: Option.none(),
         memoryRecall: true,
@@ -175,6 +184,7 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigShape>()("wea
         botUserHelper: "/usr/local/lib/weaver/weaver-bot-user",
         skillCatalog: [defaultSkillCatalog],
         githubToken: Redacted.make(""),
+        encryptionKey: "",
         ...overrides
       })
     )

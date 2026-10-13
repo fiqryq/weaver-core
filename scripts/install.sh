@@ -388,6 +388,7 @@ sudo -u "$SERVICE_USER" -H uv tool install --force --prerelease=allow basic-memo
   )
 if [ -s "$MEMORY_TOKEN_FILE" ]; then
   chmod 600 "$MEMORY_TOKEN_FILE"
+  chown root:"$SERVICE_USER" "$MEMORY_TOKEN_FILE"
   MEMORY_TOKEN_VALUE="$(tr -d '[:space:]' < "$MEMORY_TOKEN_FILE")"
 fi
 
@@ -523,6 +524,7 @@ elif [ "$BROWSER_ENGINE" = camofox ]; then
     umask 077
     [ -s "$CAMOFOX_KEY_FILE" ] || openssl rand -hex 32 > "$CAMOFOX_KEY_FILE"
   )
+  # Restrict to root and browser user only, mode 0640
   chown root:"$BROWSER_USER" "$CAMOFOX_KEY_FILE"
   chmod 640 "$CAMOFOX_KEY_FILE"
   CAMOFOX_KEY="$(tr -d '[:space:]' < "$CAMOFOX_KEY_FILE")"
@@ -764,7 +766,18 @@ SERVER_TOKEN_FILE=/etc/weaver/server-token
   [ -s "$SERVER_TOKEN_FILE" ] || openssl rand -hex 32 > "$SERVER_TOKEN_FILE"
 )
 chmod 600 "$SERVER_TOKEN_FILE"
+chown root:root "$SERVER_TOKEN_FILE"
 SERVER_TOKEN="$(tr -d '[:space:]' < "$SERVER_TOKEN_FILE")"
+
+# AES-256 encryption key for OAuth tokens at rest (32 bytes = 64 hex chars)
+ENCRYPTION_KEY_FILE=/etc/weaver/encryption-key
+(
+  umask 077
+  [ -s "$ENCRYPTION_KEY_FILE" ] || openssl rand -hex 32 > "$ENCRYPTION_KEY_FILE"
+)
+chmod 600 "$ENCRYPTION_KEY_FILE"
+chown root:root "$ENCRYPTION_KEY_FILE"
+ENCRYPTION_KEY="$(tr -d '[:space:]' < "$ENCRYPTION_KEY_FILE")"
 
 # The agent server runs on the same machine, so it reaches Basic Memory on loopback
 # (behind the token proxy that's the upstream port, which needs no token).
@@ -806,6 +819,7 @@ WEAVER_TOKEN=$SERVER_TOKEN
 WEAVER_LISTEN=$TS_IP:7700
 WEAVER_DATA_DIR=$DATA_DIR
 WEAVER_MEMORY_URL=$AGENT_MEMORY_URL
+WEAVER_ENCRYPTION_KEY=$ENCRYPTION_KEY
 $BROWSER_SETTINGS
 WEAVER_BOT_USER=per-bot
 WEAVER_BOT_GROUP=$BOT_GROUP
@@ -820,6 +834,10 @@ step "Keeping bot commands out of the agent server's data"
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 711 "$DATA_DIR" "$DATA_DIR/bots"
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 700 "$DATA_DIR/backups"
 find "$DATA_DIR" -mindepth 1 -maxdepth 1 ! -name bots -exec chmod -R go-rwx {} +
+# Restrict database permissions to owner-only (0600)
+[ -f "$DATA_DIR/weaver.db" ] && chmod 600 "$DATA_DIR/weaver.db"
+[ -f "$DATA_DIR/weaver.db-shm" ] && chmod 600 "$DATA_DIR/weaver.db-shm"
+[ -f "$DATA_DIR/weaver.db-wal" ] && chmod 600 "$DATA_DIR/weaver.db-wal"
 for BOT_DIR in "$DATA_DIR"/bots/*; do
   if [ ! -d "$BOT_DIR" ] || [ -L "$BOT_DIR" ]; then continue; fi
   chown "$SERVICE_USER:$SERVICE_USER" "$BOT_DIR"
@@ -864,6 +882,11 @@ ExecStart=$SERVER_BIN
 Restart=always
 # Tailscale may not have its address yet right after boot.
 RestartSec=5
+# Security hardening: hide other users' processes from the service
+# ProtectProc=invisible hides /proc/<pid> entries for processes not owned by this user
+# ProcSubset=pid further restricts /proc to only process information (no /proc/sys, etc)
+ProtectProc=invisible
+ProcSubset=pid
 
 [Install]
 WantedBy=multi-user.target
