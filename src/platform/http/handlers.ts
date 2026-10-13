@@ -1,7 +1,7 @@
 import { statfs } from "node:fs/promises"
 import { Effect, Layer, Option, Redacted } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
-import { AppConfig, version } from "../../config/Config.ts"
+import { AppConfig, builtAt, commit, version } from "../../config/Config.ts"
 import { BotsHandlers } from "../../features/bots/handlers.ts"
 import { ConversationsHandlers } from "../../features/conversations/handlers.ts"
 import { IntegrationsHandlers } from "../../features/integrations/handlers.ts"
@@ -12,6 +12,7 @@ import { Health } from "../../features/profile/Profile.ts"
 import { ProvidersHandlers } from "../../features/providers/handlers.ts"
 import { RunsHandlers } from "../../features/runs/handlers.ts"
 import { TeamsHandlers } from "../../features/teams/handlers.ts"
+import { UpdatesHandlers } from "../../features/updates/handlers.ts"
 import { Camofox } from "../../tools/builtin/Camofox.ts"
 import { Api } from "./Api.ts"
 import { Authorization, tokensMatch, Unauthorized } from "./Authorization.ts"
@@ -51,6 +52,8 @@ const SystemHandlers = HttpApiBuilder.group(
         return new Health({
           status: "ok",
           version,
+          commit,
+          builtAt,
           memory: Option.isSome(config.memory),
           browser,
           browserEngine: config.browser === "off" ? "none" : config.browser,
@@ -60,6 +63,7 @@ const SystemHandlers = HttpApiBuilder.group(
           memoryApi: true,
           teams: true,
           oauthIntegrations: true,
+          updates: true,
           uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
           ...(dataDirFreeBytes === undefined ? {} : { dataDirFreeBytes })
         })
@@ -78,5 +82,6 @@ export const ApiHandlers = Layer.mergeAll(
   ProvidersHandlers,
   IntegrationsHandlers,
   MemoryHandlers,
-  TeamsHandlers
+  TeamsHandlers,
+  UpdatesHandlers
 )
