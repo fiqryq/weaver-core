@@ -53,7 +53,8 @@ describe("OpenAI-compatible provider", () => {
       const [request] = mock.requests
       expect(request!.headers.authorization).toBe("Bearer sk-mock")
       expect(request!.body).toMatchObject({ model: "mock-model", stream: true, stream_options: { include_usage: true } })
-      expect(request!.body.tools).toBeUndefined()
+      // A bot without tools still gets the team-building ones.
+      expect(request!.body.tools?.map((tool) => tool.function.name)).toEqual(["find_skills", "propose_team"])
       expect(request!.body.messages[0]!.role).toBe("system")
       expect(turnMessages(request!)).toEqual([{ role: "user", content: "Hi" }])
     }).pipe(Effect.provide(realModelLayer())))
