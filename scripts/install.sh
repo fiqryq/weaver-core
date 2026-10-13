@@ -3,7 +3,8 @@
 # Tailscale, a virtual desktop served through noVNC, Glances stats, Basic Memory, the bots' browser
 # (Camoufox, shown on the desktop) and the Weaver agent server that runs the bots. Each bot's commands run as its own unprivileged
 # user (wb-...) that can't read the server's data, other bots' files or the local services' ports.
-# Also installs weaver-update (updates the agent server) and a nightly backup of its database.
+# Also installs weaver-update (updates the agent server, by hand or with one click from the Weaver app),
+# weaver-backup and weaver-restore, and a nightly backup of its database.
 # Safe to run again; it updates what is already installed and keeps existing tokens.
 #
 #   curl -fsSL https://github.com/fiqryq/weaver-core/releases/download/server-latest/install.sh | bash
@@ -22,8 +23,8 @@
 #   WEAVER_SERVER_URL=https://...                 download the agent server from here instead; SHA256SUMS
 #                                                 and the helper scripts are read from the same folder
 #   WEAVER_SERVER_SHA256=...                      expected SHA-256 of the download, instead of SHA256SUMS
-#   WEAVER_HELPERS_DIR=/path                      install weaver-bot-user and weaver-update from this folder
-#                                                 instead of downloading them from the release
+#   WEAVER_HELPERS_DIR=/path                      install weaver-bot-user, weaver-update, weaver-backup and
+#                                                 weaver-restore from this folder instead of downloading them
 #   BROWSER_ENGINE=camofox the bots' browser: camofox (the default) runs Camoufox, a Firefox build, as its own
 #                          service (weaver-camofox) on the virtual desktop; playwright installs Chromium for
 #                          Playwright MCP instead (the older setup)
@@ -736,19 +737,20 @@ else
 fi
 mv -f "$SERVER_BIN.new" "$SERVER_BIN"
 
-step "Installing weaver-update and the bot user helper"
+step "Installing weaver-update, weaver-backup, weaver-restore and the bot user helper"
 install -d -o root -g root -m 755 "$HELPER_DIR"
-for HELPER in weaver-bot-user weaver-update; do
+HELPERS="weaver-bot-user weaver-update weaver-backup weaver-restore"
+for HELPER in $HELPERS; do
   if [ -n "${WEAVER_HELPERS_DIR:-}" ]; then
     HELPER_SOURCE="$WEAVER_HELPERS_DIR/$HELPER"
     if [ ! -f "$HELPER_SOURCE" ]; then
-      echo "$HELPER_SOURCE is missing (WEAVER_HELPERS_DIR needs weaver-bot-user and weaver-update)." >&2
+      echo "$HELPER_SOURCE is missing (WEAVER_HELPERS_DIR needs $HELPERS)." >&2
       exit 1
     fi
   else
     HELPER_SOURCE="$WORK_DIR/$HELPER"
     if ! download_checked "$SERVER_RELEASE_URL/$HELPER" "$HELPER_SOURCE" ""; then
-      echo "Set WEAVER_HELPERS_DIR to a folder with weaver-bot-user and weaver-update (weaver-core/scripts)." >&2
+      echo "Set WEAVER_HELPERS_DIR to a folder with $HELPERS (weaver-core/scripts)." >&2
       exit 1
     fi
   fi
@@ -1018,6 +1020,9 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now weaver-firewall weaver-backup.timer >/dev/null 2>&1
+# One-click updates: the agent server leaves a release tag in /var/lib/weaver-update/request and the root
+# weaver-update.path runs weaver-update for it; the server itself never gets root.
+/usr/local/bin/weaver-update --install-updater
 # Before weaver-display existed, weaver-desktop ran the X server itself; it has to be gone first.
 systemctl stop weaver-camofox >/dev/null 2>&1 || true
 systemctl stop weaver-desktop >/dev/null 2>&1 || true
@@ -1122,7 +1127,7 @@ case "$BROWSER_ENGINE" in
   playwright) echo "Browser:        Chromium through Playwright MCP, on the Screen" ;;
   *) echo "Browser:        none (SKIP_BROWSER is set)" ;;
 esac
-echo "Updates:        sudo weaver-update"
+echo "Updates:        one click in the Weaver app, or sudo weaver-update"
 echo "Backups:        nightly in $DATA_DIR/backups (sudo systemctl start weaver-backup to run one now)"
 
 }

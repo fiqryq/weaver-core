@@ -75,8 +75,9 @@ echo "Serving on $LISTEN_IP (stands in for the Tailscale address)"
 
 in_box mkdir -p /root/weaver-test/helpers
 docker cp "$CORE/dist/weaver-server-linux-$ARCH" "$NAME:/tmp/weaver-server"
-docker cp "$CORE/scripts/weaver-bot-user" "$NAME:/root/weaver-test/helpers/weaver-bot-user"
-docker cp "$CORE/scripts/weaver-update" "$NAME:/root/weaver-test/helpers/weaver-update"
+for helper in weaver-bot-user weaver-update weaver-backup weaver-restore; do
+  docker cp "$CORE/scripts/$helper" "$NAME:/root/weaver-test/helpers/$helper"
+done
 docker cp "$CORE/scripts/check-bot-isolation.sh" "$NAME:/root/weaver-test/check-bot-isolation.sh"
 docker cp "$HERE/assert.sh" "$NAME:/root/weaver-test/assert.sh"
 docker cp "$SETUP_SCRIPT" "$NAME:/root/weaver-test/install.sh"
@@ -112,10 +113,10 @@ checks 1
 
 step "Setup, second run (downloads and verifies from the fake release assert.sh made)"
 setup setup-2 -e "WEAVER_SERVER_URL=file:///srv/fake-releases/server-latest/weaver-server-linux-$ARCH"
-for file in "weaver-server-linux-$ARCH" weaver-bot-user weaver-update; do
+for file in "weaver-server-linux-$ARCH" weaver-bot-user weaver-update weaver-backup weaver-restore; do
   grep -q "^Checked $file: sha256 " "$LOGS/setup-2.log" || { echo "The setup script didn't check $file." >&2; exit 1; }
 done
-echo "checked the binary and both helpers against SHA256SUMS"
+echo "checked the binary and the helpers against SHA256SUMS"
 if [ -z "${SKIP_BROWSER:-}" ]; then
   grep -q "^Checked camoufox-.*: sha256 " "$LOGS/setup-1.log" || { echo "The first run didn't check the Camoufox download." >&2; exit 1; }
   if grep -q "^Downloading camoufox-" "$LOGS/setup-2.log"; then echo "The second run downloaded Camoufox again." >&2; exit 1; fi

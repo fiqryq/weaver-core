@@ -4,47 +4,216 @@
 #   sudo weaver-update                 install the latest build (the rolling server-latest release)
 #   sudo weaver-update v0.2.0          install a tagged release instead
 #   sudo weaver-update --force [tag]   reinstall even if the binary hasn't changed
+#   --status-file FILE                 also write progress to FILE as JSON (state, message, tag, updatedAt)
+#   --from-request                     install the tag the Weaver app asked for in /var/lib/weaver-update/request
+#   --install-updater                  only set up one-click updates (weaver-update.path), then stop
 #
 # It downloads the binary and SHA256SUMS from the release, checks the binary against them, swaps it in
 # atomically, restarts weaver-agent, and puts the previous binary back if /v1/health doesn't answer in
-# time. The release's helper scripts (weaver-bot-user and weaver-update itself) are updated with it.
+# time. The release's helper scripts (weaver-bot-user, weaver-backup, weaver-restore and weaver-update
+# itself) are updated with it, and so is the one-click updater the app uses.
 #
-# Environment:
+# Environment (WEAVER_UPDATE_URL may also be set in /etc/weaver/agent.env):
 #   WEAVER_UPDATE_URL=https://...   where releases live (default the weaver-core GitHub releases); the tag
 #                                   is appended, so files are read from $WEAVER_UPDATE_URL/<tag>/. file:// works.
 #   WEAVER_UPDATE_TIMEOUT=30        seconds to wait for /v1/health before rolling back
+#
+# One-click updates: the agent server runs unprivileged, so it can't update itself. It writes the tag to
+# install into /var/lib/weaver-update/request; weaver-update.path notices and starts the root
+# weaver-update-request.service, which runs `weaver-update --from-request`. Progress goes to
+# /var/lib/weaver-update/status.json, which the server reads for the app.
 set -euo pipefail
 umask 022
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-RELEASES_URL="${WEAVER_UPDATE_URL:-https://github.com/fiqryq/weaver-core/releases/download}"
+ENV_FILE=/etc/weaver/agent.env
+setting() { sed -n "s/^$1=//p" "$ENV_FILE" 2>/dev/null | tail -n1; }
+RELEASES_URL="${WEAVER_UPDATE_URL:-$(setting WEAVER_UPDATE_URL)}"
+RELEASES_URL="${RELEASES_URL:-https://github.com/fiqryq/weaver-core/releases/download}"
 TIMEOUT="${WEAVER_UPDATE_TIMEOUT:-30}"
 SERVER_BIN=/usr/local/bin/weaver-server
 UPDATE_BIN=/usr/local/bin/weaver-update
 BOT_USER_HELPER=/usr/local/lib/weaver/weaver-bot-user
-ENV_FILE=/etc/weaver/agent.env
 SERVICE=weaver-agent
 LOCK_FILE=/run/lock/weaver-update.lock
+# Shared with the agent server's user (WEAVER_UPDATE_DIR on its side): sticky and group-writable, so the
+# server can leave a request but can't touch root's status.json or the marker that says this is set up.
+UPDATE_DIR=/var/lib/weaver-update
+UPDATE_MARKER=$UPDATE_DIR/.updater-installed
 
 say() { printf '%s\n' "$*"; }
-die() { printf 'weaver-update: %s\n' "$*" >&2; exit 1; }
+
+STATUS_FILE=""
+STATUS_TAG=""
+LAST_STATE=""
+# The state a failure ends in; rolled-back once the previous binary is back.
+FAIL_STATE=failed
+json_string() {
+  local text="$1"
+  text="${text//\\/\\\\}"
+  text="${text//\"/\\\"}"
+  text="${text//$'\n'/\\n}"
+  text="${text//$'\r'/}"
+  text="${text//$'\t'/ }"
+  printf '"%s"' "$text"
+}
+# Writes the state (and an optional message) to --status-file. The file is replaced by rename, so a
+# reader never sees half of it and a symlink in its place is replaced rather than followed.
+report() {
+  [ -n "$STATUS_FILE" ] || return 0
+  local message=null tag=null staged
+  LAST_STATE="$1"
+  [ -z "${2:-}" ] || message="$(json_string "$2")"
+  [ -z "$STATUS_TAG" ] || tag="$(json_string "$STATUS_TAG")"
+  staged="$(mktemp -p "$(dirname "$STATUS_FILE")" .status.XXXXXX 2>/dev/null)" || return 0
+  if printf '{"state":"%s","message":%s,"tag":%s,"updatedAt":"%s"}\n' \
+    "$1" "$message" "$tag" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$staged" \
+    && chmod 644 "$staged" && mv -fT "$staged" "$STATUS_FILE"; then
+    return 0
+  fi
+  rm -f "$staged"
+}
+die() {
+  printf 'weaver-update: %s\n' "$*" >&2
+  report "$FAIL_STATE" "$*"
+  exit 1
+}
 
 FORCE=""
 TAG=""
+FROM_REQUEST=""
+SETUP_ONLY=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -f | --force) FORCE=1 ;;
-    -h | --help) sed -n '2,15s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    --status-file) [ "$#" -ge 2 ] || die "--status-file needs a file name"; STATUS_FILE="$2"; shift ;;
+    --from-request) FROM_REQUEST=1 ;;
+    --install-updater) SETUP_ONLY=1 ;;
+    -h | --help) sed -n '2,25s/^# \{0,1\}//p' "$0"; exit 0 ;;
     -*) die "unknown option $1 (try --help)" ;;
     *) [ -z "$TAG" ] || die "give at most one release tag"; TAG="$1" ;;
   esac
   shift
 done
-TAG="${TAG:-server-latest}"
-[[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid release tag: $TAG"
-[[ "$TIMEOUT" =~ ^[0-9]+$ ]] || die "WEAVER_UPDATE_TIMEOUT must be a number of seconds"
-
+[ -z "$FROM_REQUEST" ] || [ -z "$TAG" ] || die "--from-request reads the tag from the request; don't give one"
 [ "$(id -u)" -eq 0 ] || die "run this as root, for example: sudo weaver-update"
+[ -z "$FROM_REQUEST" ] || STATUS_FILE="$UPDATE_DIR/status.json"
+
+WORK="$(mktemp -d)"
+STAGED=()
+TAKEN=""
+# shellcheck disable=SC2329 # run by the EXIT trap
+cleanup() {
+  local code=$?
+  rm -rf "$WORK"
+  [ "${#STAGED[@]}" -eq 0 ] || rm -f "${STAGED[@]}"
+  [ -z "$TAKEN" ] || rm -rf "$TAKEN"
+  # Anything that stopped the script without saying so still ends the update for the app.
+  case "$LAST_STATE" in
+    "" | done | failed | rolled-back) ;;
+    *) [ "$code" -eq 0 ] || report failed "weaver-update stopped unexpectedly (exit $code); see journalctl -u weaver-update-request" ;;
+  esac
+}
+trap cleanup EXIT
+
+# Copies $1 next to $2 and renames it over $2, so $2 is never half-written.
+install_atomic() {
+  local source="$1" target="$2" mode="$3" staged
+  staged="$(mktemp -p "$(dirname "$target")" ".$(basename "$target").new.XXXXXX")"
+  STAGED+=("$staged")
+  cp "$source" "$staged"
+  chown root:root "$staged"
+  chmod "$mode" "$staged"
+  mv -fT "$staged" "$target"
+}
+
+# Writes $2 to /etc/systemd/system/$1 if it changed; says whether it did.
+UNITS_CHANGED=""
+write_unit() {
+  printf '%s\n' "$2" > "$WORK/$1"
+  if ! cmp -s "$WORK/$1" "/etc/systemd/system/$1" 2>/dev/null; then
+    install_atomic "$WORK/$1" "/etc/systemd/system/$1" 644
+    UNITS_CHANGED=1
+  fi
+}
+
+# Sets up (or refreshes) one-click updates: the folder shared with the agent server's user, the path unit
+# that watches it and the service that runs `weaver-update --from-request`.
+install_updater() {
+  local user group
+  user="$(systemctl show -p User --value "$SERVICE" 2>/dev/null || true)"
+  user="${user:-weaver}"
+  if ! group="$(id -gn "$user" 2>/dev/null)"; then
+    say "One-click updates weren't set up: the agent server's user $user doesn't exist."
+    return 0
+  fi
+  if [ -L "$UPDATE_DIR" ] || { [ -e "$UPDATE_DIR" ] && [ ! -d "$UPDATE_DIR" ]; }; then rm -f "$UPDATE_DIR"; fi
+  install -d -o root -g "$group" -m 1770 "$UPDATE_DIR"
+  chown root:"$group" "$UPDATE_DIR"
+  chmod 1770 "$UPDATE_DIR"
+  write_unit weaver-update.path "[Unit]
+Description=Watch for agent server updates the Weaver app asks for
+
+[Path]
+PathExists=$UPDATE_DIR/request
+Unit=weaver-update-request.service
+
+[Install]
+WantedBy=multi-user.target"
+  write_unit weaver-update-request.service "[Unit]
+Description=Install the agent server update the Weaver app asked for
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$UPDATE_BIN --from-request
+TimeoutStartSec=30min"
+  if [ -n "$UNITS_CHANGED" ]; then systemctl daemon-reload; fi
+  systemctl enable weaver-update.path >/dev/null 2>&1
+  # Restarted so it watches with the current settings; a waiting request is handled right away.
+  if [ -n "$UNITS_CHANGED" ] || ! systemctl is-active --quiet weaver-update.path; then
+    systemctl restart weaver-update.path
+  fi
+  if [ ! -f "$UPDATE_MARKER" ] || [ -L "$UPDATE_MARKER" ]; then
+    printf '1\n' > "$WORK/marker"
+    install_atomic "$WORK/marker" "$UPDATE_MARKER" 644
+    say "Turned on one-click updates from the Weaver app."
+  fi
+}
+
+if [ -n "$SETUP_ONLY" ]; then
+  install_updater
+  exit 0
+fi
+
+# Takes the app's request out of the shared folder before reading it, so the server's user can't swap
+# it for a link to another file in between.
+if [ -n "$FROM_REQUEST" ]; then
+  if [ ! -e "$UPDATE_DIR/request" ] && [ ! -L "$UPDATE_DIR/request" ]; then
+    say "There's no update request in $UPDATE_DIR."
+    exit 0
+  fi
+  TAKEN="$(mktemp -d -p "$UPDATE_DIR" .taken.XXXXXX)"
+  mv -fT "$UPDATE_DIR/request" "$TAKEN/request"
+  if [ -L "$TAKEN/request" ] || [ ! -f "$TAKEN/request" ] || [ "$(stat -c %h "$TAKEN/request")" != 1 ]; then
+    die "the update request isn't a plain file, so it was ignored"
+  fi
+  TAG="$(head -c 256 "$TAKEN/request" | sed -n 1p | tr -d '[:space:]')"
+  rm -rf "$TAKEN"
+  TAKEN=""
+  [ -n "$TAG" ] || die "the update request didn't name a release"
+fi
+
+TAG="${TAG:-server-latest}"
+if ! [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  # A request's text isn't repeated: it could be anything the server's user managed to put there.
+  [ -z "$FROM_REQUEST" ] || die "the update request doesn't name a valid release tag"
+  die "invalid release tag: $TAG"
+fi
+STATUS_TAG="$TAG"
+report requested
+[[ "$TIMEOUT" =~ ^[0-9]+$ ]] || die "WEAVER_UPDATE_TIMEOUT must be a number of seconds"
 [ -x "$SERVER_BIN" ] || die "$SERVER_BIN isn't installed; run install.sh first"
 case "$(uname -m)" in
   x86_64 | amd64) ARCH=x64 ;;
@@ -57,16 +226,6 @@ BASE_URL="${RELEASES_URL%/}/$TAG"
 exec 9>"$LOCK_FILE"
 flock -n 9 || die "another weaver-update is running"
 
-WORK="$(mktemp -d)"
-STAGED=()
-# shellcheck disable=SC2329 # run by the EXIT trap
-cleanup() {
-  rm -rf "$WORK"
-  [ "${#STAGED[@]}" -eq 0 ] || rm -f "${STAGED[@]}"
-}
-trap cleanup EXIT
-
-setting() { sed -n "s/^$1=//p" "$ENV_FILE" 2>/dev/null | tail -n1; }
 LISTEN="$(setting WEAVER_LISTEN)"
 LISTEN="${LISTEN:-:7700}"
 HOST="${LISTEN%:*}"
@@ -79,10 +238,12 @@ fetch() { curl -fsSL --retry 3 --connect-timeout 15 "$1" -o "$2"; }
 # The release is refreshed file by file, so a download caught halfway through gets one more try.
 verified=""
 for attempt in 1 2 3; do
+  report downloading "Downloading $ASSET from $TAG"
   if ! fetch "$BASE_URL/SHA256SUMS" "$WORK/SHA256SUMS"; then
     die "couldn't download $BASE_URL/SHA256SUMS; check the tag and your network"
   fi
   fetch "$BASE_URL/$ASSET" "$WORK/$ASSET" || die "couldn't download $BASE_URL/$ASSET"
+  report verifying "Checking $ASSET against SHA256SUMS"
   if (cd "$WORK" && grep -E "^[0-9a-f]{64}  $ASSET\$" SHA256SUMS | sha256sum -c --status - 2>/dev/null); then
     verified=1
     break
@@ -93,7 +254,7 @@ done
 
 # Helper scripts ship in the same release. Older releases don't have them; then the installed ones stay.
 HELPERS=()
-for helper in weaver-bot-user weaver-update; do
+for helper in weaver-bot-user weaver-update weaver-backup weaver-restore; do
   grep -qE "^[0-9a-f]{64}  $helper\$" "$WORK/SHA256SUMS" || continue
   fetch "$BASE_URL/$helper" "$WORK/$helper" || die "couldn't download $BASE_URL/$helper"
   (cd "$WORK" && grep -E "^[0-9a-f]{64}  $helper\$" SHA256SUMS | sha256sum -c --status -) \
@@ -112,24 +273,14 @@ wait_healthy() {
   done
   return 1
 }
-# Copies $1 next to $2 and renames it over $2, so $2 is never half-written.
-install_atomic() {
-  local source="$1" target="$2" mode="$3" staged
-  staged="$(mktemp -p "$(dirname "$target")" ".$(basename "$target").new.XXXXXX")"
-  STAGED+=("$staged")
-  cp "$source" "$staged"
-  chown root:root "$staged"
-  chmod "$mode" "$staged"
-  mv -f "$staged" "$target"
-}
-
 CURRENT_SUM="$(sha256sum "$SERVER_BIN" | cut -d' ' -f1)"
 NEW_SUM="$(sha256sum "$WORK/$ASSET" | cut -d' ' -f1)"
 
+report installing "Installing $TAG"
 for helper in "${HELPERS[@]}"; do
   case "$helper" in
     weaver-bot-user) install -d -o root -g root -m 755 "$(dirname "$BOT_USER_HELPER")"; target="$BOT_USER_HELPER" ;;
-    weaver-update) target="$UPDATE_BIN" ;;
+    *) target="/usr/local/bin/$helper" ;;
   esac
   if ! cmp -s "$WORK/$helper" "$target" 2>/dev/null; then
     install_atomic "$WORK/$helper" "$target" 755
@@ -140,8 +291,11 @@ if [ "$(setting WEAVER_BOT_USER)" = per-bot ] && ! command -v setfacl >/dev/null
   say "Install the acl package (apt-get install acl) so bots' users can open files the server writes in their workspaces."
 fi
 
+install_updater
+
 if [ "$CURRENT_SUM" = "$NEW_SUM" ] && [ -z "$FORCE" ]; then
   say "The agent server is already up to date ($TAG, sha256 ${NEW_SUM:0:12})."
+  report "done" "The agent server is already up to date."
   exit 0
 fi
 
@@ -149,17 +303,22 @@ BEFORE="$(running_version || true)"
 cp -p "$SERVER_BIN" "$SERVER_BIN.previous"
 install_atomic "$WORK/$ASSET" "$SERVER_BIN" 755
 say "Installed $ASSET from $TAG (sha256 ${NEW_SUM:0:12}); restarting $SERVICE."
+report restarting "Restarting the agent server"
 systemctl restart "$SERVICE"
 if wait_healthy; then
-  say "The agent server is up (version ${BEFORE:-unknown} -> $(running_version || echo unknown))."
+  AFTER="$(running_version || echo unknown)"
+  say "The agent server is up (version ${BEFORE:-unknown} -> $AFTER)."
   say "The previous binary is kept at $SERVER_BIN.previous."
+  report "done" "Updated to $AFTER."
   exit 0
 fi
 
 echo "The new agent server didn't answer $HEALTH_URL within ${TIMEOUT}s; putting the previous one back." >&2
+report restarting "The new agent server didn't start; putting the previous one back"
 install_atomic "$SERVER_BIN.previous" "$SERVER_BIN" 755
 systemctl restart "$SERVICE"
 if wait_healthy; then
+  FAIL_STATE=rolled-back
   die "rolled back to the previous agent server; see journalctl -u $SERVICE for why the new one failed"
 fi
 die "rolled back, but the previous agent server isn't answering either; check journalctl -u $SERVICE"
