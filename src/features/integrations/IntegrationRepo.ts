@@ -1,7 +1,7 @@
 import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js"
 import { Context, Effect, Layer, Semaphore } from "effect"
 import { SqlClient } from "effect/sql"
-import { decodeStringArray, decodeStringRecord, newId, nowIso } from "../../platform/lib/util.ts"
+import { decodeStringArray, decodeStringRecord, newId, nowIso, orDieWithLog } from "../../platform/lib/util.ts"
 import {
   Integration,
   type IntegrationCreate,
@@ -97,11 +97,11 @@ export class IntegrationRepo extends Context.Service<IntegrationRepo, {
 
       const list = sql<IntegrationRow>`SELECT * FROM integrations ORDER BY created_at`.pipe(
         Effect.map((rows) => rows.map(fromRow)),
-        Effect.orDie
+        orDieWithLog
       )
 
       const getRow = Effect.fn("IntegrationRepo.getRow")(function*(id: string) {
-        const rows = yield* sql<IntegrationRow>`SELECT * FROM integrations WHERE id = ${id}`.pipe(Effect.orDie)
+        const rows = yield* sql<IntegrationRow>`SELECT * FROM integrations WHERE id = ${id}`.pipe(orDieWithLog)
         const row = rows[0]
         if (row === undefined) return yield* new IntegrationNotFound({ id })
         return row
@@ -129,8 +129,8 @@ export class IntegrationRepo extends Context.Service<IntegrationRepo, {
             created_at: now,
             updated_at: now
           })
-        }`.pipe(Effect.orDie)
-        return yield* Effect.orDie(get(id))
+        }`.pipe(orDieWithLog)
+        return yield* orDieWithLog(get(id))
       })
 
       const update = Effect.fn("IntegrationRepo.update")(function*(id: string, input: IntegrationUpdate) {
@@ -148,13 +148,13 @@ export class IntegrationRepo extends Context.Service<IntegrationRepo, {
         const urlChanged = input.url !== undefined && input.url !== current.url
         const authChanged = input.auth !== undefined && input.auth !== current.auth
         if (urlChanged || authChanged) changes.oauth = "{}"
-        yield* sql`UPDATE integrations SET ${sql.update(changes)} WHERE id = ${id}`.pipe(Effect.orDie)
+        yield* sql`UPDATE integrations SET ${sql.update(changes)} WHERE id = ${id}`.pipe(orDieWithLog)
         return yield* get(id)
       }, writes.withPermit)
 
       const remove = Effect.fn("IntegrationRepo.remove")(function*(id: string) {
         yield* get(id)
-        yield* sql`DELETE FROM integrations WHERE id = ${id}`.pipe(Effect.orDie)
+        yield* sql`DELETE FROM integrations WHERE id = ${id}`.pipe(orDieWithLog)
       })
 
       const oauth = (id: string) => Effect.map(getRow(id), (row) => decodeOAuth(row.oauth))
@@ -162,7 +162,7 @@ export class IntegrationRepo extends Context.Service<IntegrationRepo, {
       const updateOAuth = Effect.fn("IntegrationRepo.updateOAuth")(
         function*(id: string, change: (data: OAuthData) => OAuthData) {
           const next = change(yield* oauth(id))
-          yield* sql`UPDATE integrations SET oauth = ${JSON.stringify(next)} WHERE id = ${id}`.pipe(Effect.orDie)
+          yield* sql`UPDATE integrations SET oauth = ${JSON.stringify(next)} WHERE id = ${id}`.pipe(orDieWithLog)
           return next
         },
         writes.withPermit

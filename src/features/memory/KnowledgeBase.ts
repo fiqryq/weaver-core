@@ -3,7 +3,7 @@ import { Cause, Clock, Context, Duration, Effect, FiberSet, Layer, Option, Semap
 import { SqlClient } from "effect/sql"
 import { AppConfig } from "../../config/Config.ts"
 import { BadRequest, Conflict } from "../../platform/http/errors.ts"
-import { newId, nowIso } from "../../platform/lib/util.ts"
+import { newId, nowIso, orDieWithLog } from "../../platform/lib/util.ts"
 import { botMemoryProject, memoryServerConfig, noteWriteError, pinProject } from "../../tools/builtin/Memory.ts"
 import { BotRepo } from "../bots/BotRepo.ts"
 import { McpHub } from "../integrations/McpHub.ts"
@@ -308,7 +308,7 @@ export class KnowledgeBase extends Context.Service<KnowledgeBase, {
           const last = yield* latest(project, file.permalink)
           if (last !== undefined && last.checksum === checksum) {
             if (options.updatedAt !== undefined && options.updatedAt !== last.note_updated_at) {
-              yield* sql`UPDATE memory_versions SET note_updated_at = ${options.updatedAt} WHERE id = ${last.id}`.pipe(Effect.orDie)
+              yield* sql`UPDATE memory_versions SET note_updated_at = ${options.updatedAt} WHERE id = ${last.id}`.pipe(orDieWithLog)
             }
             return { id: last.id, created: false }
           }
@@ -327,12 +327,12 @@ export class KnowledgeBase extends Context.Service<KnowledgeBase, {
               note_updated_at: options.updatedAt ?? "",
               created_at: yield* nowIso
             })
-          }`.pipe(Effect.orDie)
+          }`.pipe(orDieWithLog)
           yield* sql`
             DELETE FROM memory_versions WHERE project = ${project} AND permalink = ${file.permalink} AND id NOT IN (
               SELECT id FROM memory_versions WHERE project = ${project} AND permalink = ${file.permalink}
               ORDER BY created_at DESC, rowid DESC LIMIT ${maxVersionsPerNote}
-            )`.pipe(Effect.orDie)
+            )`.pipe(orDieWithLog)
           return { id, created: true }
         }))
 
@@ -377,7 +377,7 @@ export class KnowledgeBase extends Context.Service<KnowledgeBase, {
         const rows = yield* sql<VersionRow>`
           SELECT ${versionColumns} FROM memory_versions
           WHERE project = ${name} AND permalink = ${file.permalink}
-          ORDER BY created_at DESC, rowid DESC`.pipe(Effect.orDie)
+          ORDER BY created_at DESC, rowid DESC`.pipe(orDieWithLog)
         return new NoteHistory({
           project: name,
           permalink: file.permalink,
@@ -390,7 +390,7 @@ export class KnowledgeBase extends Context.Service<KnowledgeBase, {
       const versionRow = (id: string) =>
         Effect.gen(function*() {
           const rows = yield* sql<VersionRow & { readonly content: string }>`
-            SELECT ${versionColumns}, content FROM memory_versions WHERE id = ${id}`.pipe(Effect.orDie)
+            SELECT ${versionColumns}, content FROM memory_versions WHERE id = ${id}`.pipe(orDieWithLog)
           const row = rows[0]
           return row === undefined ? yield* new MemoryVersionNotFound({ id }) : row
         })

@@ -3,7 +3,7 @@ import { Context, Duration, Effect, Layer, Redacted, Schema } from "effect"
 import type { LanguageModel } from "effect/ai"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { SqlClient } from "effect/sql"
-import { nowIso } from "../../platform/lib/util.ts"
+import { nowIso, orDieWithLog } from "../../platform/lib/util.ts"
 import { Settings } from "../profile/Settings.ts"
 import { normalizeChatRequests } from "./chatRequest.ts"
 import {
@@ -77,7 +77,7 @@ export class ProviderRegistry extends Context.Service<ProviderRegistry, {
       const stored = (id: string) =>
         sql<ProviderRow>`SELECT * FROM providers WHERE id = ${id}`.pipe(
           Effect.map((rows) => rows[0]),
-          Effect.orDie
+          orDieWithLog
         )
 
       const info = Effect.fn("ProviderRegistry.info")(function*(id: string) {
@@ -117,7 +117,7 @@ export class ProviderRegistry extends Context.Service<ProviderRegistry, {
         yield* sql`INSERT INTO providers ${sql.insert(next)}
           ON CONFLICT (id) DO UPDATE SET
             base_url = excluded.base_url, api_key = excluded.api_key,
-            model = excluded.model, updated_at = excluded.updated_at`.pipe(Effect.orDie)
+            model = excluded.model, updated_at = excluded.updated_at`.pipe(orDieWithLog)
         if (input.makeDefault === true) yield* settings.setDefaultProviderId(id)
         return yield* info(id)
       })
