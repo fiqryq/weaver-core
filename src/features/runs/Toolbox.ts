@@ -18,6 +18,7 @@ import {
   memoryTitle,
   pinProject
 } from "../../tools/builtin/Memory.ts"
+import { scheduleTools } from "../../tools/builtin/Schedules.ts"
 import { runCommandTool } from "../../tools/builtin/Shell.ts"
 import { findSkillsTool, proposeTeamTool } from "../../tools/builtin/TeamBuilder.ts"
 import { webTools } from "../../tools/builtin/Web.ts"
@@ -36,6 +37,7 @@ import { CoreMemory } from "../learning/memory/CoreMemory.ts"
 import type { RecalledNote } from "../learning/memory/recall.ts"
 import { type SkillIndexEntry, SkillStore } from "../learning/skills/SkillStore.ts"
 import { KnowledgeBase, writeTarget } from "../memory/KnowledgeBase.ts"
+import { ScheduleRepo } from "../schedules/ScheduleRepo.ts"
 import { TeamRepo } from "../teams/TeamRepo.ts"
 import type { TeamSetup } from "../teams/teamSetup.ts"
 import { RunEvents } from "./RunEvents.ts"
@@ -97,6 +99,7 @@ export class Toolbox extends Context.Service<Toolbox, {
       // them, bots can't build teams.
       const teams = yield* Effect.serviceOption(TeamRepo)
       const sources = Option.getOrUndefined(yield* Effect.serviceOption(SkillSources))
+      const schedules = Option.getOrUndefined(yield* Effect.serviceOption(ScheduleRepo))
       const teamSetup: TeamSetup | undefined = Option.isSome(teams)
         ? { teams: teams.value, bots, conversations, events }
         : undefined
@@ -270,6 +273,16 @@ export class Toolbox extends Context.Service<Toolbox, {
           tools.push(findSkillsTool({ library, sources }))
           if ((kind === "chat" || kind === "team-private") && teamSetup !== undefined && sources !== undefined) {
             tools.push(proposeTeamTool({ proposer: bot, setup: teamSetup, library, sources }))
+          }
+          const conversationId = options?.conversationId
+          if ((kind === "chat" || kind === "team-private") && schedules !== undefined && conversationId !== undefined) {
+            tools.push(...scheduleTools({
+              repo: schedules,
+              botId: bot.id,
+              conversationId,
+              changed: events.publish({ type: "schedules-changed", conversationId }),
+              needsApproval: ask
+            }))
           }
         }
 

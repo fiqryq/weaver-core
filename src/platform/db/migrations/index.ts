@@ -6,6 +6,7 @@ import librarySkills from "./0005_library_skills.ts"
 import memory from "./0006_memory.ts"
 import teams from "./0007_teams.ts"
 import integrationOAuth from "./0008_integration_oauth.ts"
+import schedules from "./0009_schedules.ts"
 
 /** Kept as a record (not loaded from disk) so the compiled single binary carries them. */
 export const migrations = {
@@ -16,5 +17,6 @@ export const migrations = {
   "0005_library_skills": librarySkills,
   "0006_memory": memory,
   "0007_teams": teams,
-  "0008_integration_oauth": integrationOAuth
+  "0008_integration_oauth": integrationOAuth,
+  "0009_schedules": schedules
 }

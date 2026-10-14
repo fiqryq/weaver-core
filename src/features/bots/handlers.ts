@@ -15,6 +15,7 @@ import { SelfReview } from "../learning/review/SelfReview.ts"
 import { SkillStore } from "../learning/skills/SkillStore.ts"
 import { AgentRunner } from "../runs/AgentRunner.ts"
 import { RunEvents } from "../runs/RunEvents.ts"
+import { ScheduleRepo } from "../schedules/ScheduleRepo.ts"
 import { TeamRepo } from "../teams/TeamRepo.ts"
 import { TeamSessions } from "../teams/TeamSessions.ts"
 import { BotRepo } from "./BotRepo.ts"
@@ -36,6 +37,7 @@ export const BotsHandlers = HttpApiBuilder.group(
     const events = yield* RunEvents
     const teams = yield* TeamRepo
     const teamSessions = yield* TeamSessions
+    const schedules = yield* ScheduleRepo
 
     const checkIntegrations = (ids: ReadonlyArray<string> | undefined) =>
       Effect.gen(function*() {
@@ -129,6 +131,10 @@ export const BotsHandlers = HttpApiBuilder.group(
           const handoffs = yield* conversations.handoffsOf(params.id)
           yield* bots.remove(params.id)
           yield* teamSessions.botRemoved(params.id)
+          const cancelled = yield* schedules.removeForBot(params.id)
+          for (const conversationId of new Set(cancelled.map((schedule) => schedule.conversationId))) {
+            yield* events.publish({ type: "schedules-changed", conversationId })
+          }
           if (config.browser === "camofox") {
             yield* camofox.removeBot(params.id)
             for (const handoff of handoffs) yield* camofox.closeConversation(handoff.id, handoff.botIds)
