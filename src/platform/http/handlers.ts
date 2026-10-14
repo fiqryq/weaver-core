@@ -11,6 +11,7 @@ import { ProfileHandlers } from "../../features/profile/handlers.ts"
 import { Health } from "../../features/profile/Profile.ts"
 import { ProvidersHandlers } from "../../features/providers/handlers.ts"
 import { RunsHandlers } from "../../features/runs/handlers.ts"
+import { SchedulesHandlers } from "../../features/schedules/handlers.ts"
 import { TeamsHandlers } from "../../features/teams/handlers.ts"
 import { UpdatesHandlers } from "../../features/updates/handlers.ts"
 import { Camofox } from "../../tools/builtin/Camofox.ts"
@@ -64,6 +65,7 @@ const SystemHandlers = HttpApiBuilder.group(
           teams: true,
           oauthIntegrations: true,
           updates: true,
+          schedules: true,
           uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
           ...(dataDirFreeBytes === undefined ? {} : { dataDirFreeBytes })
         })
@@ -83,5 +85,6 @@ export const ApiHandlers = Layer.mergeAll(
   IntegrationsHandlers,
   MemoryHandlers,
   TeamsHandlers,
+  SchedulesHandlers,
   UpdatesHandlers
 )

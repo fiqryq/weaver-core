@@ -6,19 +6,26 @@ Every route except `/v1/health` needs `Authorization: Bearer <WEAVER_TOKEN>`. Th
 
 | Route | What it's for |
 | --- | --- |
-| `GET /v1/health` | Status, version, build `commit` and `builtAt`, uptime, free disk, and which features are on (`memory`, `browser`, `handoffs`, `skillsLibrary`, `teams`, `oauthIntegrations`, `updates`) |
+| `GET /v1/health` | Status, version, build `commit` and `builtAt`, uptime, free disk, and which features are on (`memory`, `browser`, `handoffs`, `skillsLibrary`, `teams`, `oauthIntegrations`, `updates`, `schedules`) |
 | `GET /v1/update?channel=stable\|latest&refresh=1` | The channel's newest release against this build (cached for an hour; `refresh=1` checks again), whether one-click updates are `supported`, and the updater's `status` |
 | `POST /v1/update` | `{ "channel", "tag"? }`: asks the root-side updater to install the channel's newest release (or `tag`). `202`, or `409` while an update runs, `503` when the updater isn't installed, `404` when there's nothing newer |
 | `/v1/bots` | Bots, their tools, integrations, teammates and skills (`/v1/bots/:id/skills`) |
 | `/v1/conversations` | Chats and messages. Posting a message starts a run. Also `cancel`, `regenerate` and `resume` |
-| `GET /v1/events`, `GET /v1/conversations/:id/events` | Server-sent events: run progress, approvals, and changes to skills, teams and integration sign-ins |
+| `GET /v1/events`, `GET /v1/conversations/:id/events` | Server-sent events: run progress, approvals, and changes to skills, teams, schedules and integration sign-ins |
 | `POST /v1/approvals/:id`, `POST /v1/runs/:id/cancel` | Answer an approval request, stop a run |
 | `/v1/providers` | Model providers and their keys |
 | `/v1/integrations` | MCP integrations. For `auth: "oauth"` ones: `POST :id/oauth/start` (answers the URL to open), `POST :id/oauth/finish` (relays `code` and `state`), and `DELETE :id/oauth` to sign out |
 | `/v1/memory` | Basic Memory projects, the knowledge graph, and note history and versions |
 | `/v1/skills` | The shared skills library: `catalog`, `install`, `import`, `promote` and `:name/bots` |
 | `/v1/teams` | Teams, plus `stop` and `resume` |
+| `/v1/schedules` | Scheduled tasks: `GET ?conversationId=` lists them soonest first, `DELETE /:id` cancels one |
 | `/v1/profile` | Your profile and settings |
+
+## Scheduled tasks
+
+In chats and team private chats, bots get `schedule_task` (`title`, `prompt`, `every_minutes` from 15 to 43200, optional `first_run_at`) and `scheduled_tasks` (`list`, or `cancel` by `id`). `schedule_task` asks for approval when the bot's approval mode is `ask`. A chat holds at most 10 schedules.
+
+The server checks for due schedules every 30 seconds. When one is due, it posts `⏰ Scheduled task "<title>":` and the prompt as your message (with the usual `message-created` event) and starts the conversation's bots, so results land in the chat like any reply. If the conversation is busy replying, the schedule waits a minute instead of interrupting it. A schedule missed while the server was down runs once when it comes back. Adding, running or cancelling a schedule sends `schedules-changed` with its `conversationId`. Schedules are deleted with their conversation, and with the bot that set them up.
 
 ## Teams
 

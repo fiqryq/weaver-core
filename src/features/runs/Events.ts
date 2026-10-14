@@ -84,6 +84,11 @@ export const RunEvent = Schema.Union([
     type: Schema.Literal("team-changed"),
     teamId: Schema.String
   }),
+  /** A conversation's scheduled tasks were added, run, or cancelled (see `/v1/schedules`). */
+  Schema.Struct({
+    type: Schema.Literal("schedules-changed"),
+    conversationId: Schema.String
+  }),
   /** An integration signed in, signed out, or needs the person to sign in again. */
   Schema.Struct({
     type: Schema.Literal("integration-changed"),

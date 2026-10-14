@@ -40,6 +40,8 @@ export class Health extends Schema.Class<Health>("Health")({
   oauthIntegrations: Schema.optional(Schema.Boolean),
   /** The server can check for and install its own updates (`/v1/update`). */
   updates: Schema.optional(Schema.Boolean),
+  /** Bots can repeat tasks in a conversation on an interval (`/v1/schedules`, the `schedule_task` tool). */
+  schedules: Schema.optional(Schema.Boolean),
   /** Bytes free for the server on the data folder's filesystem. */
   dataDirFreeBytes: Schema.optional(Schema.Number)
 }) {}

@@ -21,6 +21,7 @@ import type { RunEvent } from "../../../src/features/runs/Events.ts"
 import { RunEvents } from "../../../src/features/runs/RunEvents.ts"
 import { Toolbox } from "../../../src/features/runs/Toolbox.ts"
 import { TeamRepo } from "../../../src/features/teams/TeamRepo.ts"
+import { ScheduleRepo } from "../../../src/features/schedules/ScheduleRepo.ts"
 import { TeamSessions } from "../../../src/features/teams/TeamSessions.ts"
 import { AppRoutes } from "../../../src/main.ts"
 import { DatabaseTest } from "../../../src/platform/db/Database.ts"
@@ -70,7 +71,7 @@ const memoryServices = (memory: FakeMemory, model: Layer.Layer<LanguageModelFact
     Layer.provideMerge(Layer.mergeAll(SkillStore.layer, IntegrationOAuth.layer)),
     Layer.provideMerge(Layer.mergeAll(memory.layer, RunEvents.layer, Approvals.layer, BotUsers.layer, Camofox.layer, Updates.layer)),
     Layer.provideMerge(ProviderRegistry.layer),
-    Layer.provideMerge(Layer.mergeAll(BotRepo.layer, ConversationRepo.layer, IntegrationRepo.layer, Settings.layer, TeamRepo.layer)),
+    Layer.provideMerge(Layer.mergeAll(BotRepo.layer, ConversationRepo.layer, IntegrationRepo.layer, Settings.layer, TeamRepo.layer, ScheduleRepo.layer)),
     Layer.provideMerge(model),
     Layer.provideMerge(DatabaseTest),
     Layer.provideMerge(BunServices.layer),

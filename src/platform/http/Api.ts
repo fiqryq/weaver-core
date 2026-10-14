@@ -8,6 +8,7 @@ import { ProfileApi } from "../../features/profile/api.ts"
 import { Health } from "../../features/profile/Profile.ts"
 import { ProvidersApi } from "../../features/providers/api.ts"
 import { RunsApi } from "../../features/runs/api.ts"
+import { SchedulesApi } from "../../features/schedules/api.ts"
 import { TeamsApi } from "../../features/teams/api.ts"
 import { UpdatesApi } from "../../features/updates/api.ts"
 
@@ -28,6 +29,7 @@ export class Api extends HttpApi.make("weaver")
   .add(IntegrationsApi)
   .add(MemoryApi)
   .add(TeamsApi)
+  .add(SchedulesApi)
   .add(UpdatesApi)
   .annotateMerge(OpenApi.annotations({ title: "Weaver agent server" }))
 {}
