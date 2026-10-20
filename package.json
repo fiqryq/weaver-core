@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node api.js && bun --watch src/main.ts",
-    "start": "node api.js && bun src/main.ts",
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts",
     "check": "tsc --noEmit",
     "test": "bun --bun vitest run",
     "build": "bun build src/main.ts --compile --outfile dist/weaver-server",
